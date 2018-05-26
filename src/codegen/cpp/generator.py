@@ -2,42 +2,60 @@ import sys, copy
 import codemodel
 
 options = {
-    "outputFile": None
+    "output_file": None
 }
 
-class Generator(codemodel.cpp.CppModelVisitor):
+class Generator(codemodel.ClassDiagramVisitor):
 
-    def __init__(self, customOptions={}):
-        super(CppCodeGenerator, self).__init__()
+    def __init__(self, custom_options={}):
+        super(Generator, self).__init__()
 
         self.options = copy.deepcopy(options)
-        if customOptions:
-            self.options.update(customOptions) 
+        if custom_options:
+            self.options.update(custom_options) 
 
-        self.nsStack = []
-        self.out = self.options["outputFile"]
+        self.ns_stack = []
+        self.out = self.options["output_file"]
         if not self.out:
             self.out = sys.stdout
     #enddef
 
-    def visitCppNamespace(self, node):
-        self.writeln("namespace ", node.name, " {")
-        self.nsStack.append(node)
-        super(CppCodeGenerator, self).visitCppNamespace(node)
-        self.writeln("} // namespace ", "::".join(ns.name for ns in self.nsStack))
-        self.nsStack.pop()
+    def visit_package(self, node):
+        # TODO Do a special node for the root node.
+        name = node.attributes.get("name", "")
+        if name:
+            self.writeln("namespace ", name, " {")
+            self.ns_stack.append(node)
+        super(Generator, self).visit_package(node)
+        if name:
+            self.writeln("} // namespace ", "::".join(ns.name for ns in self.ns_stack))
+            self.ns_stack.pop()
     #enddef
 
-    def visitCppClass(self, node):
-        self.writeln("struct " if node.struct else "class ", node.name, " {")
-        super(CppCodeGenerator, self).visitCppClass(node)
+    def visit_class(self, node):
+        name = node.attributes.get("name", "")
+        is_struct = node.attributes.get("is_struct", False)
+
+        if not name:
+            raise RuntimeError("Missing or empty 'name' attribute of a 'class' node")
+
+        self.writeln("struct " if is_struct else "class ", name, " {")
+        super(Generator, self).visit_class(node)
         self.writeln("};")
     #enddef
 
-    def visitCppMethod(self, node):
-        self.writeln("static " if node.static else "", node.retval, " ", node.name,
-            "(", ", ".join(node.params), ");")
-        super(CppCodeGenerator, self).visitCppMethod(node)
+    def visit_operation(self, node):
+        name = node.attributes.get("name", "")
+        return_type = node.attributes.get("return_type", "void")
+        params = node.attributes.get("params", [])
+        is_static = node.attributes.get("is_static", False)
+
+        if not name:
+            raise RuntimeError("Missing or empty 'name' attribute of a 'operation' node")
+
+        self.writeln("static " if is_static else "", return_type, " ", name,
+            "(", ", ".join(params), ");")
+        super(Generator, self).visit_operation(node)
     #enddef
 
     def write(self, *args):
@@ -47,7 +65,7 @@ class Generator(codemodel.cpp.CppModelVisitor):
 
     def writeln(self, *args):
         self.write(*args)
-        print >> self.out
+        print(file=self.out)
     #enddef
 
-#enddef
+#endclass
