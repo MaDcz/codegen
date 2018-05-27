@@ -28,7 +28,7 @@ class Generator(codemodel.ClassDiagramVisitor):
             self.ns_stack.append(node)
         super(Generator, self).visit_package(node)
         if name:
-            self.writeln("} // namespace ", "::".join(ns.name for ns in self.ns_stack))
+            self.writeln("} // namespace ", "::".join(ns.attributes["name"] for ns in self.ns_stack))
             self.ns_stack.pop()
     #enddef
 
