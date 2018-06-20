@@ -5,11 +5,27 @@ options = {
     "output_file": None
 }
 
+PHASE_NONE = -1
+
+PHASE_HEADER_GEN = 0
+PHASE_SOURCE_GEN = 1
+
+PHASE_CLASS_GEN                     = 10
+PHASE_CLASS_GEN_MEMBER_GETTER       = PHASE_CLASS_GEN + 1
+PHASE_CLASS_GEN_MEMBER_CONST_GETTER = PHASE_CLASS_GEN + 2
+PHASE_CLASS_GEN_MEMBER_SETTER       = PHASE_CLASS_GEN + 3
+PHASE_CLASS_GEN_MEMBER_VARIABLE     = PHASE_CLASS_GEN + 4
+
+PRINTER_FINISHED = 1
+PRINTER_NOT_FINISHED = 0
+
 class Context(object):
 
     def __init__(self, out):
         self._out = out
         self._printers_data = {}
+        self.__phases_stack = []
+        self.__namespaces_stack = []
     #enddef
 
     @property
@@ -22,22 +38,65 @@ class Context(object):
         return self._printers_data
     #enddef
 
+    def begin_phase(self, phase):
+        self.__phases_stack.append(phase)
+    #enddef
+
+    def end_phase(self, phase):
+        assert self.__phases_stack
+        assert self.__phases_stack[-1] == phase
+        self.__phases_stack.pop()
+    #enddef
+
+    @property
+    def current_phase(self):
+        return PHASE_NONE if not self.__phases_stack else self.__phases_stack[-1]
+    #enddef
+
+    def begin_namespace(self, ns):
+        self.__namespaces_stack.append(ns)
+    #enddef
+
+    def end_namespace(self, ns):
+        assert self.__namespaces_stack
+        assert self.__namespaces_stack[-1] == ns
+        self.__namespaces_stack.pop()
+    #enddef
+
+    @property
+    def open_namespaces(self):
+        return list(self.__namespaces_stack)
+    #enddef
+
 #endclass
 
 class Printer(object):
 
-    def __init__(self, context):
+    def __init__(self, context, node):
         self.__context = context
+        self.__node = node
         self.__printers = []
+
+        assert(self.__node)
+        assert(self.__context)
     #enddef
 
     @property
     def context(self):
-        self_key = self.__generate_key()
-        if self_key not in self.__context.printers_data:
-            self.__context.printers_data[self_key] = {}
+        return self.__context
+    #enddef
 
-        return self.__context.printers_data[self_key]
+    @property
+    def node(self):
+        return self.__node
+    #enddef
+
+    def get_node_attribute(self, attr_path, default=None):
+        attr_path_parts = attr_path.split(".")
+        attrs_view = self.__node.attributes
+        for part in attr_path_parts[:-1]:
+            attrs_view = attrs_view.get(part, {})
+        return attrs.get(attr_path_parts[-1], default)
     #enddef
 
     # TODO Better encapsulate this.
@@ -73,29 +132,27 @@ class NamespacePrinter(Printer):
     # XXX
 
     def __init__(self, context, node):
-        super(NamespacePrinter, self).__init__(context)
-        self._node = node
+        super(NamespacePrinter, self).__init__(context, node)
     #enddef
 
-    def generate(self, parent_phase = -1):
-        context = self.context
-        # TODO Better to have static variable for this.
-        if "ns_stack" not in context:
-            context["ns_stack"] = []
+    def generate(self):
+        finished_flag = PRINTER_FINISHED
 
         # TODO Do a special node for the root node.
-        name = self._node.attributes.get("name", "")
+        name = self.node.attributes.get("name", "")
         if name:
             self.writeln("namespace ", name, " {")
-            context["ns_stack"].append(self._node)
+            self.context.begin_namespace(self.node)
 
         # TODO Move this to the base where printers property will be better encapsulated.
         for printer in self.printers:
-            printer.generate(parent_phase)
+            finished_flag &= printer.generate()
 
         if name:
-            self.writeln("} // namespace ", "::".join(ns.attributes["name"] for ns in context["ns_stack"]))
-            context["ns_stack"].pop()
+            self.writeln("} // namespace ", "::".join(ns.attributes["name"] for ns in self.context.open_namespaces))
+            self.context.end_namespace(self.node)
+
+        return finished_flag
     #enddef
 
 #endclass
@@ -112,21 +169,15 @@ class ClassPrinter(Printer):
     # part we are generating.
     # XXX
 
-    # The phases will need to be global.
-    CLASS_GEN_MEMBER_GETTER = 0
-    CLASS_GEN_MEMBER_CONST_GETTER = 1
-    CLASS_GEN_MEMBER_SETTER = 2
-    CLASS_GEN_MEMBER_VARIABLE = 3
-    CLASS_GEN_CNT = 4
-
     def __init__(self, context, node):
-        super(ClassPrinter, self).__init__(context)
-        self._node = node
+        super(ClassPrinter, self).__init__(context, node)
     #enddef
 
-    def generate(self, parent_phase = -1):
-        name = self._node.attributes.get("name", "")
-        is_struct = self._node.attributes.get("is_struct", False)
+    def generate(self):
+        finished_flag = PRINTER_FINISHED
+
+        name = self.node.attributes.get("name", "")
+        is_struct = self.node.attributes.get("is_struct", False)
 
         if not name:
             raise RuntimeError("Missing or empty 'name' attribute of a 'class' node")
@@ -136,14 +187,21 @@ class ClassPrinter(Printer):
 
         if self.printers:
             self.writeln("public:")
-            for phase in range(self.CLASS_GEN_CNT):
-                if phase == self.CLASS_GEN_MEMBER_VARIABLE:
+            for phase in  [ PHASE_CLASS_GEN_MEMBER_GETTER, PHASE_CLASS_GEN_MEMBER_CONST_GETTER,
+                            PHASE_CLASS_GEN_MEMBER_SETTER, PHASE_CLASS_GEN_MEMBER_VARIABLE ]:
+                if phase == PHASE_CLASS_GEN_MEMBER_VARIABLE:
                     self.writeln("private:")
 
+                self.context.begin_phase(phase)
+
                 for printer in self.printers:
-                    printer.generate(phase)
+                    finished_flag &= printer.generate()
+
+                self.context.end_phase(phase)
 
         self.writeln("};")
+
+        return finished_flag
     #enddef
 
 #endclass
@@ -151,42 +209,45 @@ class ClassPrinter(Printer):
 class ClassMemberPrinter(Printer):
 
     def __init__(self, context, node):
-        super(ClassMemberPrinter, self).__init__(context)
-        self._node = node # TODO Move to the base too.
+        super(ClassMemberPrinter, self).__init__(context, node)
     #enddef
 
-    def generate(self, parent_phase = -1):
+    def generate(self):
+        finished_flag = PRINTER_FINISHED
+
         def resolve_type():
-            return "std::vector<{}>".format(self._node.attributes.get("type", "")) \
-                    if self._node.attributes.get("is_repeated", False) \
-                    else self._node.attributes.get("type", "")
+            return "std::vector<{}>".format(self.node.attributes.get("type", "")) \
+                    if self.node.attributes.get("is_repeated", False) \
+                    else self.node.attributes.get("type", "")
         #enddef
 
         # TODO Use context for passing the current phase.
-        if parent_phase == ClassPrinter.CLASS_GEN_MEMBER_GETTER:
+        if self.context.current_phase == PHASE_CLASS_GEN_MEMBER_GETTER:
             # TODO Distinguish between types ('value' vs. 'reference' type).
             # TODO Use format() in a better way (arguments could be preparend in advance).
             # TODO Use ''' style string.
-            self.writeln("  {}& {}()".format(resolve_type(), self._node.attributes.get("name", "")))
+            self.writeln("  {}& {}()".format(resolve_type(), self.node.attributes.get("name", "")))
             self.writeln("  {")
-            self.writeln("    return m_{};".format(self._node.attributes.get("name", "")))
+            self.writeln("    return m_{};".format(self.node.attributes.get("name", "")))
             self.writeln("  }")
-        elif parent_phase == ClassPrinter.CLASS_GEN_MEMBER_CONST_GETTER:
-            self.writeln("  const {}& {}() const".format(resolve_type(), self._node.attributes.get("name", "")))
+        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_CONST_GETTER:
+            self.writeln("  const {}& {}() const".format(resolve_type(), self.node.attributes.get("name", "")))
             self.writeln("  {")
-            self.writeln("    return m_{};".format(self._node.attributes.get("name", "")))
+            self.writeln("    return m_{};".format(self.node.attributes.get("name", "")))
             self.writeln("  }")
-        elif parent_phase == ClassPrinter.CLASS_GEN_MEMBER_SETTER:
+        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_SETTER:
             # TODO Also consider R-value for move semantic.
-            self.writeln("  void {}(const {}& value)".format(self._node.attributes.get("name", ""), resolve_type()))
+            self.writeln("  void {}(const {}& value)".format(self.node.attributes.get("name", ""), resolve_type()))
             self.writeln("  {")
-            self.writeln("    m_{} = value;".format(self._node.attributes.get("name", "")))
+            self.writeln("    m_{} = value;".format(self.node.attributes.get("name", "")))
             self.writeln("  }")
-        elif parent_phase == ClassPrinter.CLASS_GEN_MEMBER_VARIABLE:
+        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_VARIABLE:
             # TODO Initialization (default value).
-            self.writeln("  {} m_{};".format(resolve_type(), self._node.attributes.get("name", "")))
+            self.writeln("  {} m_{};".format(resolve_type(), self.node.attributes.get("name", "")))
         else:
             raise Exception("ClassMemberPrinter in wrong context")
+
+        return finished_flag
     #enddef
 
 #endclass
@@ -220,11 +281,7 @@ class Generator(codemodel.ClassDiagramVisitor):
 
         super(Generator, self).visit_package(node)
 
-        printer = self._printers_stack.pop()
-        if self._printers_stack:
-            self._printers_stack[-1].printers.append(printer)
-        else:
-            printer.generate()
+        self._finalize_printer(self._printers_stack.pop())
     #enddef
 
     def visit_class(self, node):
@@ -232,11 +289,7 @@ class Generator(codemodel.ClassDiagramVisitor):
 
         super(Generator, self).visit_class(node)
 
-        printer = self._printers_stack.pop()
-        if self._printers_stack:
-            self._printers_stack[-1].printers.append(printer)
-        else:
-            printer.generate()
+        self._finalize_printer(self._printers_stack.pop())
     #enddef
 
 # TODO
@@ -261,11 +314,18 @@ class Generator(codemodel.ClassDiagramVisitor):
 
         super(Generator, self).visit_attribute(node)
 
-        printer = self._printers_stack.pop()
-        if self._printers_stack:
-            self._printers_stack[-1].printers.append(printer)
+        self._finalize_printer(self._printers_stack.pop())
+    #enddef
+
+    def _finalize_printer(self, printer):
+        if not self._printers_stack:
+            # The last printer (the root one), output the code.
+            for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
+                if printer.generate() == PRINTER_FINISHED:
+                    break
         else:
-            printer.generate()
+            # Not everything finalized yet, continue.
+            self._printers_stack[-1].printers.append(printer)
     #enddef
 
 #endclass
