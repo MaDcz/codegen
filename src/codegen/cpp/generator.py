@@ -10,11 +10,17 @@ PHASE_NONE = -1
 PHASE_HEADER_GEN = 0
 PHASE_SOURCE_GEN = 1
 
-PHASE_CLASS_GEN                     = 10
-PHASE_CLASS_GEN_MEMBER_GETTER       = PHASE_CLASS_GEN + 1
-PHASE_CLASS_GEN_MEMBER_CONST_GETTER = PHASE_CLASS_GEN + 2
-PHASE_CLASS_GEN_MEMBER_SETTER       = PHASE_CLASS_GEN + 3
-PHASE_CLASS_GEN_MEMBER_VARIABLE     = PHASE_CLASS_GEN + 4
+PHASE_CLASS             = 10
+PHASE_CLASS_DECL        = PHASE_CLASS + 1
+PHASE_CLASS_IMPL        = PHASE_CLASS + 2
+PHASE_CLASS_PIMPL_DECL  = PHASE_CLASS + 3
+PHASE_CLASS_PIMPL_IMPL  = PHASE_CLASS + 4
+
+PHASE_CLASS_MEMBER              = 20
+PHASE_CLASS_MEMBER_GETTER       = PHASE_CLASS_MEMBER + 1
+PHASE_CLASS_MEMBER_CONST_GETTER = PHASE_CLASS_MEMBER + 2
+PHASE_CLASS_MEMBER_SETTER       = PHASE_CLASS_MEMBER + 3
+PHASE_CLASS_MEMBER_VARIABLE     = PHASE_CLASS_MEMBER + 4
 
 PRINTER_FINISHED = 1
 PRINTER_NOT_FINISHED = 0
@@ -53,6 +59,10 @@ class Context(object):
         return PHASE_NONE if not self.__phases_stack else self.__phases_stack[-1]
     #enddef
 
+    def in_phase(self, phase):
+        return phase in self.__phases_stack
+    #enddef
+
     def begin_namespace(self, ns):
         self.__namespaces_stack.append(ns)
     #enddef
@@ -76,6 +86,7 @@ class Printer(object):
         self.__context = context
         self.__node = node
         self.__printers = []
+        self.__parent = None
 
         assert(self.__node)
         assert(self.__context)
@@ -102,7 +113,22 @@ class Printer(object):
     # TODO Better encapsulate this.
     @property
     def printers(self):
-        return self.__printers
+        return list(self.__printers)
+    #enddef
+
+    def add_printer(self, printer):
+        self.__printers.append(printer)
+        printer.set_parent(self)
+    #enddef
+
+    def set_parent(self, printer):
+        assert self.__parent is None
+        self.__parent = printer
+    #enddef
+
+    @property
+    def parent(self):
+        return self.__parent
     #enddef
 
     def __generate_key(self):
@@ -174,34 +200,119 @@ class ClassPrinter(Printer):
     #enddef
 
     def generate(self):
-        finished_flag = PRINTER_FINISHED
 
-        name = self.node.attributes.get("name", "")
-        is_struct = self.node.attributes.get("is_struct", False)
+        SECTION_NONE = 0
+        SECTION_PUBLIC = 1
+        SECTION_PROTECTED = 2
+        SECTION_PRIVATE = 3
 
-        if not name:
+        class data:
+            finished_flag = PRINTER_FINISHED
+            section = SECTION_NONE
+
+            class node_attrs:
+                name = self.node.attributes.get("name", "")
+                is_struct = self.node.attributes.get("is_struct", False)
+
+                class cpp:
+                    pimpl = self.node.attributes.get("cpp", {}).get("pimpl", False)
+                #endclass data.node_attrs.cpp
+            #endclass data.node_attrs
+        #endclass data
+
+        if not data.node_attrs.name:
             raise RuntimeError("Missing or empty 'name' attribute of a 'class' node")
 
-        self.writeln("struct " if is_struct else "class ", name)
-        self.writeln("{")
+        for printer in self.printers:
+            data.node_attrs.cpp.pimpl |= printer.node.attributes.get("cpp", {}).get("pimpl", False)
 
-        if self.printers:
-            self.writeln("public:")
-            for phase in  [ PHASE_CLASS_GEN_MEMBER_GETTER, PHASE_CLASS_GEN_MEMBER_CONST_GETTER,
-                            PHASE_CLASS_GEN_MEMBER_SETTER, PHASE_CLASS_GEN_MEMBER_VARIABLE ]:
-                if phase == PHASE_CLASS_GEN_MEMBER_VARIABLE:
-                    self.writeln("private:")
-
-                self.context.begin_phase(phase)
+        def generate_content(phases):
+            if self.printers:
+                if (self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL)) \
+                        and data.section != SECTION_PUBLIC:
+                    self.writeln("public:")
+                    data.section = SECTION_PUBLIC
 
                 for printer in self.printers:
-                    finished_flag &= printer.generate()
+                    for phase in phases:
+                        if (self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL)) \
+                                and phase == PHASE_CLASS_MEMBER_VARIABLE \
+                                and data.section != SECTION_PRIVATE:
+                            self.writeln("private:")
+                            data.section = SECTION_PRIVATE
 
-                self.context.end_phase(phase)
+                        self.context.begin_phase(phase)
+
+                        # FIXME This isn't sufficient, members will indicate that they didn't
+                        # finished in the very beginning and it will be carried over through
+                        # the whole process in the return value.
+                        data.finished_flag &= printer.generate()
+
+                        self.context.end_phase(phase)
+                    #endfor
+                #endfor
+            #endif
+        #enddef
+
+        # TODO Structs isn't supported properly, generated as classes at the moment.
+
+        self.context.begin_phase(PHASE_CLASS_DECL)
+        self.writeln("struct " if data.node_attrs.is_struct else "class ", data.node_attrs.name)
+        self.writeln("{")
+        if data.node_attrs.cpp.pimpl:
+            if data.section != SECTION_PUBLIC:
+                self.writeln("public:")
+                data.section = SECTION_PUBLIC
+            self.writeln("  {}()".format(data.node_attrs.name))
+            self.writeln("    : m_impl(new Impl)")
+            self.writeln("  {")
+            self.writeln("  }")
+
+        generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                           PHASE_CLASS_MEMBER_CONST_GETTER,
+                           PHASE_CLASS_MEMBER_SETTER ])
+        generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
+
+        if data.node_attrs.cpp.pimpl:
+            self.writeln("private:")
+            self.writeln("  class Impl;")
+            self.writeln("  Impl* m_impl = nullptr;")
 
         self.writeln("};")
+        self.context.end_phase(PHASE_CLASS_DECL)
 
-        return finished_flag
+        if data.node_attrs.cpp.pimpl:
+            # Declare pimpl class.
+            data.section = SECTION_NONE
+            self.context.begin_phase(PHASE_CLASS_PIMPL_DECL)
+            self.writeln("class ", data.node_attrs.name, "::Impl")
+            self.writeln("{")
+
+            generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                               PHASE_CLASS_MEMBER_SETTER ])
+            generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
+
+            self.writeln("};")
+            self.context.end_phase(PHASE_CLASS_PIMPL_DECL)
+
+            # Implement pimpl class methods.
+            self.context.begin_phase(PHASE_CLASS_PIMPL_IMPL)
+
+            generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                               PHASE_CLASS_MEMBER_SETTER ])
+
+            self.context.end_phase(PHASE_CLASS_PIMPL_IMPL)
+        #endif
+
+        self.context.begin_phase(PHASE_CLASS_IMPL)
+
+        generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                           PHASE_CLASS_MEMBER_CONST_GETTER,
+                           PHASE_CLASS_MEMBER_SETTER ])
+
+        self.context.end_phase(PHASE_CLASS_IMPL)
+
+        return data.finished_flag
     #enddef
 
 #endclass
@@ -221,31 +332,106 @@ class ClassMemberPrinter(Printer):
                     else self.node.attributes.get("type", "")
         #enddef
 
-        # TODO Use context for passing the current phase.
-        if self.context.current_phase == PHASE_CLASS_GEN_MEMBER_GETTER:
-            # TODO Distinguish between types ('value' vs. 'reference' type).
-            # TODO Use format() in a better way (arguments could be preparend in advance).
-            # TODO Use ''' style string.
-            self.writeln("  {}& {}()".format(resolve_type(), self.node.attributes.get("name", "")))
-            self.writeln("  {")
-            self.writeln("    return m_{};".format(self.node.attributes.get("name", "")))
-            self.writeln("  }")
-        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_CONST_GETTER:
-            self.writeln("  const {}& {}() const".format(resolve_type(), self.node.attributes.get("name", "")))
-            self.writeln("  {")
-            self.writeln("    return m_{};".format(self.node.attributes.get("name", "")))
-            self.writeln("  }")
-        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_SETTER:
-            # TODO Also consider R-value for move semantic.
-            self.writeln("  void {}(const {}& value)".format(self.node.attributes.get("name", ""), resolve_type()))
-            self.writeln("  {")
-            self.writeln("    m_{} = value;".format(self.node.attributes.get("name", "")))
-            self.writeln("  }")
-        elif self.context.current_phase == PHASE_CLASS_GEN_MEMBER_VARIABLE:
-            # TODO Initialization (default value).
-            self.writeln("  {} m_{};".format(resolve_type(), self.node.attributes.get("name", "")))
-        else:
-            raise Exception("ClassMemberPrinter in wrong context")
+        pimpl = self.node.attributes.get("cpp", {}).get("pimpl", None)
+        if pimpl is None:
+            pimpl = self.parent.node.attributes.get("cpp", {}).get("pimpl", False)
+
+        def generate_class_decl():
+            # TODO The following applies only for class-like types.
+            if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
+                # TODO Distinguish between types ('value' vs. 'reference' type).
+                # TODO Use format() in a better way (arguments could be preparend in advance).
+                # TODO Use ''' style string.
+                self.writeln("  {}& {}();".format(resolve_type(), self.node.attributes.get("name", "")))
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
+                self.writeln("  const {}& {}() const;".format(resolve_type(), self.node.attributes.get("name", "")))
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
+                # TODO Also consider R-value for move semantic.
+                self.writeln("  void {}(const {}& value);".format(self.node.attributes.get("name", ""), resolve_type()))
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                if not pimpl:
+                    # TODO Initialization (default value).
+                    self.writeln("  {} m_{};".format(resolve_type(), self.node.attributes.get("name", "")))
+            else:
+                raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+        #enddef
+
+        def generate_class_impl():
+            # TODO The following applies only for class-like types.
+            if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
+                # TODO Distinguish between types ('value' vs. 'reference' type).
+                # TODO Use format() in a better way (arguments could be preparend in advance).
+                # TODO Use ''' style string.
+                self.writeln("{}& {}::{}()".format(resolve_type(), self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                self.writeln("{")
+                if not pimpl:
+                    self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
+                else:
+                    self.writeln("  return m_impl->{}();".format(self.node.attributes.get("name", "")))
+                self.writeln("}")
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
+                self.writeln("const {}& {}::{}() const".format(resolve_type(), self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                self.writeln("{")
+                if not pimpl:
+                    self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
+                else:
+                    self.writeln("  return m_impl->{}();".format(self.node.attributes.get("name", "")))
+                self.writeln("}")
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
+                # TODO Also consider R-value for move semantic.
+                self.writeln("void {}::{}(const {}& value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), resolve_type()))
+                self.writeln("{")
+                if not pimpl:
+                    self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
+                else:
+                    self.writeln("  m_impl->{}(value);".format(self.node.attributes.get("name", "")))
+                self.writeln("}")
+            else:
+                raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+        #enddef
+
+        def generate_pimpl_decl():
+            if not pimpl:
+                return
+
+            # TODO The following applies only for class-like types.
+            if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
+                self.writeln("  {}& {}();".format(resolve_type(), self.node.attributes.get("name", "")))
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
+                self.writeln("  void {}(const {}& value);".format(self.node.attributes.get("name", ""), resolve_type()))
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                self.writeln("  {} m_{};".format(resolve_type(), self.node.attributes.get("name", "")))
+            else:
+                raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+        #enddef
+
+        def generate_pimpl_impl():
+            if not pimpl:
+                return
+
+            # TODO The following applies only for class-like types.
+            if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
+                self.writeln("{}& {}::Impl::{}()".format(resolve_type(), self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                self.writeln("{")
+                self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
+                self.writeln("}")
+            elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
+                self.writeln("void {}::Impl::{}(const {}& value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), resolve_type()))
+                self.writeln("{")
+                self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
+                self.writeln("}")
+            else:
+                raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+        #enddef
+
+        if self.context.in_phase(PHASE_CLASS_DECL):
+            generate_class_decl()
+        elif self.context.in_phase(PHASE_CLASS_IMPL):
+            generate_class_impl()
+        elif self.context.in_phase(PHASE_CLASS_PIMPL_DECL):
+            generate_pimpl_decl()
+        elif self.context.in_phase(PHASE_CLASS_PIMPL_IMPL):
+            generate_pimpl_impl()
 
         return finished_flag
     #enddef
@@ -321,11 +507,13 @@ class Generator(codemodel.ClassDiagramVisitor):
         if not self._printers_stack:
             # The last printer (the root one), output the code.
             for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
+                self._context.begin_phase(phase)
                 if printer.generate() == PRINTER_FINISHED:
                     break
+                self._context.end_phase(phase)
         else:
             # Not everything finalized yet, continue.
-            self._printers_stack[-1].printers.append(printer)
+            self._printers_stack[-1].add_printer(printer)
     #enddef
 
 #endclass
