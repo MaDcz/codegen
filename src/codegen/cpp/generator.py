@@ -26,40 +26,46 @@ PRINTER_FINISHED = 1
 PRINTER_NOT_FINISHED = 0
 
 cpp_fundamental_types = {
-                            "bool" : "bool",
-                            "char" : "char",
-                            "signed char" : "char",
-                            "unsigned char" : "unsigned char",
-                            "wchar_t" : "wchar_t",
-                            "char16_t" : "char16_t",
-                            "char32_t" : "char32_t",
-                            "short" : "short int",
-                            "short int" : "short int",
-                            "signed short" : "short int",
-                            "signed short int" : "short int",
-                            "unsigned short" : "unsigned short int",
-                            "unsigned short int" : "unsigned short int",
-                            "int" : "int",
-                            "signed" : "int",
-                            "signed int" : "int",
-                            "unsigned" : "unsigned int",
-                            "unsigned int" : "unsigned int",
-                            "long" : "long int",
-                            "long int" : "long int",
-                            "signed long" : "long int",
-                            "signed long int" : "long int",
-                            "unsigned long" : "unsigned long int",
-                            "unsigned long int" : "unsigned long int",
-                            "long long" : "long long int",
-                            "long long int" : "long long int",
-                            "signed long long" : "long long int",
-                            "signed long long int" : "long long int",
-                            "unsigned long long" : "unsigned long long int",
-                            "unsigned long long int" : "unsigned long long int",
-                            "float" : "float",
-                            "double" : "double",
-                            "long double" : "long double"
-                        }
+    "bool" : "bool",
+    "char" : "char",
+    "signed char" : "char",
+    "unsigned char" : "unsigned char",
+    "wchar_t" : "wchar_t",
+    "char16_t" : "char16_t",
+    "char32_t" : "char32_t",
+    "short" : "short int",
+    "short int" : "short int",
+    "signed short" : "short int",
+    "signed short int" : "short int",
+    "unsigned short" : "unsigned short int",
+    "unsigned short int" : "unsigned short int",
+    "int" : "int",
+    "signed" : "int",
+    "signed int" : "int",
+    "unsigned" : "unsigned int",
+    "unsigned int" : "unsigned int",
+    "long" : "long int",
+    "long int" : "long int",
+    "signed long" : "long int",
+    "signed long int" : "long int",
+    "unsigned long" : "unsigned long int",
+    "unsigned long int" : "unsigned long int",
+    "long long" : "long long int",
+    "long long int" : "long long int",
+    "signed long long" : "long long int",
+    "signed long long int" : "long long int",
+    "unsigned long long" : "unsigned long long int",
+    "unsigned long long int" : "unsigned long long int",
+    "float" : "float",
+    "double" : "double",
+    "long double" : "long double"
+}
+
+cpp_types = {
+    "std::vector" : {
+        "include" : "<vector>"
+    }
+}
 
 def refine_cpp_type(cpp_type):
     is_fundamental = True
@@ -94,6 +100,7 @@ class Context(object):
         self._printers_data = {}
         self.__phases_stack = []
         self.__namespaces_stack = []
+        self._used_types = []
     #enddef
 
     @property
@@ -138,6 +145,11 @@ class Context(object):
     @property
     def open_namespaces(self):
         return list(self.__namespaces_stack)
+    #enddef
+
+    @property
+    def used_types(self):
+        return self._used_types
     #enddef
 
 #endclass
@@ -225,6 +237,16 @@ class NamespacePrinter(Printer):
 
     def generate(self):
         finished_flag = PRINTER_FINISHED
+
+        if self.context.in_phase(PHASE_HEADER_GEN):
+            used_types = set(self.context.used_types)
+            if used_types:
+                for used_type in used_types:
+                    include = cpp_types.get(used_type, {}).get("include", "")
+                    if include:
+                        self.write("#include ")
+                        self.writeln(include)
+        #endif
 
         # TODO Do a special node for the root node.
         name = self.node.attributes.get("name", "")
@@ -318,80 +340,83 @@ class ClassPrinter(Printer):
 
         # TODO Structs isn't supported properly, generated as classes at the moment.
 
-        self.context.begin_phase(PHASE_CLASS_DECL)
-        self.writeln("struct " if data.node_attrs.is_struct else "class ", data.node_attrs.name)
-        self.writeln("{")
-        # Constructor & destructor.
-        if data.node_attrs.cpp.pimpl:
-            if data.section != SECTION_PUBLIC:
-                self.writeln("public:")
-                data.section = SECTION_PUBLIC
-            self.writeln("  {}();".format(data.node_attrs.name))
-            self.writeln("  virtual ~{}();".format(data.node_attrs.name))
-        else:
-            self.writeln("  virtual ~{}();".format(data.node_attrs.name))
-
-        generate_content([ PHASE_CLASS_MEMBER_GETTER,
-                           PHASE_CLASS_MEMBER_CONST_GETTER,
-                           PHASE_CLASS_MEMBER_SETTER ])
-        generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
-
-        if data.node_attrs.cpp.pimpl:
-            self.writeln("private:")
-            self.writeln("  class Impl;")
-            self.writeln("  Impl* m_impl = nullptr;")
-
-        self.writeln("};")
-        self.context.end_phase(PHASE_CLASS_DECL)
-
-        if data.node_attrs.cpp.pimpl:
-            # Declare pimpl class.
-            data.section = SECTION_NONE
-            self.context.begin_phase(PHASE_CLASS_PIMPL_DECL)
-            self.writeln("class ", data.node_attrs.name, "::Impl")
+        if self.context.in_phase(PHASE_HEADER_GEN):
+            self.context.begin_phase(PHASE_CLASS_DECL)
+            self.writeln("struct " if data.node_attrs.is_struct else "class ", data.node_attrs.name)
             self.writeln("{")
+            # Constructor & destructor.
+            if data.node_attrs.cpp.pimpl:
+                if data.section != SECTION_PUBLIC:
+                    self.writeln("public:")
+                    data.section = SECTION_PUBLIC
+                self.writeln("  {}();".format(data.node_attrs.name))
+                self.writeln("  virtual ~{}();".format(data.node_attrs.name))
+            else:
+                self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                PHASE_CLASS_MEMBER_CONST_GETTER,
                                PHASE_CLASS_MEMBER_SETTER ])
             generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
 
-            self.writeln("};")
-            self.context.end_phase(PHASE_CLASS_PIMPL_DECL)
+            if data.node_attrs.cpp.pimpl:
+                self.writeln("private:")
+                self.writeln("  class Impl;")
+                self.writeln("  Impl* m_impl = nullptr;")
 
-            # Implement pimpl class methods.
-            self.context.begin_phase(PHASE_CLASS_PIMPL_IMPL)
+            self.writeln("};")
+            self.context.end_phase(PHASE_CLASS_DECL)
+            data.finished_flag = PRINTER_NOT_FINISHED
+
+        if self.context.in_phase(PHASE_SOURCE_GEN):
+            if data.node_attrs.cpp.pimpl:
+                # Declare pimpl class.
+                data.section = SECTION_NONE
+                self.context.begin_phase(PHASE_CLASS_PIMPL_DECL)
+                self.writeln("class ", data.node_attrs.name, "::Impl")
+                self.writeln("{")
+
+                generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                                   PHASE_CLASS_MEMBER_CONST_GETTER,
+                                   PHASE_CLASS_MEMBER_SETTER ])
+                generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
+
+                self.writeln("};")
+                self.context.end_phase(PHASE_CLASS_PIMPL_DECL)
+
+                # Implement pimpl class methods.
+                self.context.begin_phase(PHASE_CLASS_PIMPL_IMPL)
+
+                generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                                   PHASE_CLASS_MEMBER_CONST_GETTER,
+                                   PHASE_CLASS_MEMBER_SETTER ])
+
+                self.context.end_phase(PHASE_CLASS_PIMPL_IMPL)
+            #endif
+
+            self.context.begin_phase(PHASE_CLASS_IMPL)
+
+            # Constructor & destructor.
+            if data.node_attrs.cpp.pimpl:
+                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+                self.writeln("  : m_impl(new Impl)")
+                self.writeln("{")
+                self.writeln("}")
+                self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("  delete m_impl;")
+                self.writeln("  m_impl = nullptr;")
+                self.writeln("}")
+            else:
+                self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("}")
 
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                PHASE_CLASS_MEMBER_CONST_GETTER,
                                PHASE_CLASS_MEMBER_SETTER ])
 
-            self.context.end_phase(PHASE_CLASS_PIMPL_IMPL)
-        #endif
-
-        self.context.begin_phase(PHASE_CLASS_IMPL)
-
-        # Constructor & destructor.
-        if data.node_attrs.cpp.pimpl:
-            self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
-            self.writeln("  : m_impl(new Impl)")
-            self.writeln("{")
-            self.writeln("}")
-            self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
-            self.writeln("{")
-            self.writeln("  delete m_impl;")
-            self.writeln("  m_impl = nullptr;")
-            self.writeln("}")
-        else:
-            self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
-            self.writeln("{")
-            self.writeln("}")
-
-        generate_content([ PHASE_CLASS_MEMBER_GETTER,
-                           PHASE_CLASS_MEMBER_CONST_GETTER,
-                           PHASE_CLASS_MEMBER_SETTER ])
-
-        self.context.end_phase(PHASE_CLASS_IMPL)
+            self.context.end_phase(PHASE_CLASS_IMPL)
 
         return data.finished_flag
     #enddef
@@ -408,6 +433,9 @@ class ClassMemberPrinter(Printer):
         self._type = "std::vector<{}>".format(self._base_type) if self._is_repeated else self._base_type
         self._type_is_fundamental = not self._is_repeated and self._base_type in cpp_fundamental_types
         self._default = "" if not self._type_is_fundamental else "false" if self._type == "bool" else "0"
+
+        if self._is_repeated:
+            self.context.used_types.append("std::vector")
     #enddef
 
     def generate(self):
@@ -598,7 +626,7 @@ class ClassMemberPrinter(Printer):
 class Generator(codemodel.ClassDiagramVisitor):
 
     # XXX This is a good approeach, it's needed to first generate printers
-    # tree from the class diagram and the output the code as there has to be
+    # tree from the class diagram and then output the code as there has to be
     # some tweaks between, like include neccesary headers.
 
     def __init__(self, custom_options={}):
