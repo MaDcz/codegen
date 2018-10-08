@@ -1,9 +1,66 @@
 import sys, copy
 import codemodel
 
-options = {
-    "output_file": None
-}
+class Output(object):
+    pass
+#enddef
+
+class Options(object):
+
+    def __init__(self, args):
+        self.args = args
+
+        self._header_output_file = None
+        self._source_output_file = None
+    #enddef
+
+    def header_output_filepath(self):
+        return self.args.output + ".hpp" if self.args.output else ""
+    #enddef
+
+    def header_output_filename(self):
+        filepath = self.header_output_filepath()
+        if filepath:
+            from os import path as pathutils
+            return pathutils.basename(filepath)
+        else:
+            return filepath
+    #enddef
+
+    def header_output_file(self):
+        if self.args.output:
+            if self._header_output_file is None:
+                self._header_output_file = \
+                        open(self.header_output_filepath(), "w")
+            return self._header_output_file
+        else:
+            return sys.stdout
+    #enddef
+
+    def source_output_filepath(self):
+        return self.args.output + ".cpp" if self.args.output else ""
+    #enddef
+
+    def source_output_filename(self):
+        filepath = self.source_output_filepath()
+        if filepath:
+            from os import path as pathutils
+            return pathutils.basename(filepath)
+        else:
+            return filepath
+    #enddef
+
+    def source_output_file(self):
+        if self.args.output:
+            if self._source_output_file is None:
+                self._source_output_file = \
+                        open(self.source_output_filepath(), "w")
+            return self._source_output_file
+        else:
+            return sys.stdout
+    #enddef
+
+#enddef
 
 PHASE_NONE = -1
 
@@ -95,8 +152,9 @@ def refine_cpp_type(cpp_type):
 
 class Context(object):
 
-    def __init__(self, out):
-        self._out = out
+    def __init__(self, options):
+        self._options = options
+        self._out = None
         self._printers_data = {}
         self.__phases_stack = []
         self.__namespaces_stack = []
@@ -104,7 +162,13 @@ class Context(object):
     #enddef
 
     @property
+    def options(self):
+        return self._options
+    #enddef
+
+    @property
     def out(self):
+        assert self._out is not None
         return self._out
     #enddef
 
@@ -115,6 +179,10 @@ class Context(object):
 
     def begin_phase(self, phase):
         self.__phases_stack.append(phase)
+        if phase == PHASE_HEADER_GEN:
+            self._out = self._options.header_output_file()
+        elif phase == PHASE_SOURCE_GEN:
+            self._out = self._options.source_output_file()
     #enddef
 
     def end_phase(self, phase):
@@ -246,6 +314,8 @@ class NamespacePrinter(Printer):
                     if include:
                         self.write("#include ")
                         self.writeln(include)
+        elif self.context.in_phase(PHASE_SOURCE_GEN):
+            self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
         #endif
 
         # TODO Do a special node for the root node.
@@ -625,25 +695,10 @@ class ClassMemberPrinter(Printer):
 
 class Generator(codemodel.ClassDiagramVisitor):
 
-    # XXX This is a good approeach, it's needed to first generate printers
-    # tree from the class diagram and then output the code as there has to be
-    # some tweaks between, like include neccesary headers.
-
-    def __init__(self, custom_options={}):
+    def __init__(self, args=None):
         super(Generator, self).__init__()
 
-        # TODO >>> Refactor this according to the latest changes.
-        self.options = copy.deepcopy(options)
-        if custom_options:
-            self.options.update(custom_options)
-
-        self.ns_stack = []
-        self.out = self.options["output_file"]
-        if not self.out:
-            self.out = sys.stdout
-        # TODO <<<
-
-        self._context = Context(self.out)
+        self._context = Context(Options(args))
         self._printers_stack = []
     #enddef
 
