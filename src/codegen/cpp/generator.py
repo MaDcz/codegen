@@ -544,7 +544,7 @@ class ClassMemberPrinter(Printer):
                     self.writeln("  const {}& {}() const;".format(self._type, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("  void {}(const {}& value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
                     if not pimpl:
                         # TODO Initialization (default value).
@@ -601,12 +601,12 @@ class ClassMemberPrinter(Printer):
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("void {}::{}(const {}& value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
                     self.writeln("{")
                     if not pimpl:
-                        self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
+                        self.writeln("  m_{} = std::move(value);".format(self.node.attributes.get("name", "")))
                     else:
-                        self.writeln("  m_impl->{}(value);".format(self.node.attributes.get("name", "")))
+                        self.writeln("  m_impl->{}(std::move(value));".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
@@ -636,7 +636,7 @@ class ClassMemberPrinter(Printer):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("  void {}(const {}& value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
                     self.writeln("  {} m_{};".format(self._type, self.node.attributes.get("name", "")))
                 else:
@@ -671,9 +671,9 @@ class ClassMemberPrinter(Printer):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("void {}::Impl::{}(const {}& value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::Impl::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
                     self.writeln("{")
-                    self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
+                    self.writeln("  m_{} = std::move(value);".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
