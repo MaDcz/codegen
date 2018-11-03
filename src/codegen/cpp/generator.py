@@ -224,32 +224,17 @@ class Context(object):
 
 class Printer(object):
 
-    def __init__(self, context, node):
+    def __init__(self, context):
         self.__context = context
-        self.__node = node
         self.__printers = []
         self.__parent = None
 
-        assert(self.__node)
         assert(self.__context)
     #enddef
 
     @property
     def context(self):
         return self.__context
-    #enddef
-
-    @property
-    def node(self):
-        return self.__node
-    #enddef
-
-    def get_node_attribute(self, attr_path, default=None):
-        attr_path_parts = attr_path.split(".")
-        attrs_view = self.__node.attributes
-        for part in attr_path_parts[:-1]:
-            attrs_view = attrs_view.get(part, {})
-        return attrs.get(attr_path_parts[-1], default)
     #enddef
 
     # TODO Better encapsulate this.
@@ -273,6 +258,18 @@ class Printer(object):
         return self.__parent
     #enddef
 
+    def find_parent(self, cond):
+        parent = self.parent()
+        while parent is not None:
+            if cond(parent):
+                break
+            else:
+                parent = parent.parent()
+        #endwhile
+
+        return parent
+    #enddef
+
     def __generate_key(self):
         self_type = type(self)
         return "{0}{1}{2}".format(self_type.__module__,
@@ -291,7 +288,56 @@ class Printer(object):
 
 #endclass
 
-class NamespacePrinter(Printer):
+class NodePrinter(Printer):
+
+    def __init__(self, context, node):
+        super(NodePrinter, self).__init__(context)
+
+        self.__node = node
+
+        assert(self.__node)
+    #enddef
+
+    @property
+    def node(self):
+        return self.__node
+    #enddef
+
+    def get_node_attribute(self, attr_path, default=None):
+        attr_path_parts = attr_path.split(".")
+        attrs_view = self.__node.attributes
+        for part in attr_path_parts[:-1]:
+            attrs_view = attrs_view.get(part, {})
+        return attrs.get(attr_path_parts[-1], default)
+    #enddef
+
+#endclass
+
+class IncludesPrinter(Printer):
+
+    def __init__(self, context):
+        super(IncludesPrinter, self).__init__(context)
+    #enddef
+
+    def generate(self):
+        if self.context.in_phase(PHASE_HEADER_GEN):
+            used_types = set(self.context.used_types)
+            if used_types:
+                for used_type in used_types:
+                    include = cpp_types.get(used_type, {}).get("include", "")
+                    if include:
+                        self.write("#include ")
+                        self.writeln(include)
+        elif self.context.in_phase(PHASE_SOURCE_GEN):
+            self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
+        #endif
+
+        return PRINTER_FINISHED
+    #enddef
+
+#endclass
+
+class NamespacePrinter(NodePrinter):
 
     # XXX
     # This needs to generate namespace declaration (opening namespace).
@@ -305,18 +351,6 @@ class NamespacePrinter(Printer):
 
     def generate(self):
         finished_flag = PRINTER_FINISHED
-
-        if self.context.in_phase(PHASE_HEADER_GEN):
-            used_types = set(self.context.used_types)
-            if used_types:
-                for used_type in used_types:
-                    include = cpp_types.get(used_type, {}).get("include", "")
-                    if include:
-                        self.write("#include ")
-                        self.writeln(include)
-        elif self.context.in_phase(PHASE_SOURCE_GEN):
-            self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
-        #endif
 
         # TODO Do a special node for the root node.
         name = self.node.attributes.get("name", "")
@@ -337,7 +371,7 @@ class NamespacePrinter(Printer):
 
 #endclass
 
-class ClassPrinter(Printer):
+class ClassPrinter(NodePrinter):
 
     # XXX
     # Basic functionality: declare class, write content, end class.
@@ -493,7 +527,7 @@ class ClassPrinter(Printer):
 
 #endclass
 
-class ClassMemberPrinter(Printer):
+class ClassMemberPrinter(NodePrinter):
 
     def __init__(self, context, node):
         super(ClassMemberPrinter, self).__init__(context, node)
@@ -695,6 +729,57 @@ class ClassMemberPrinter(Printer):
 
 class Generator(codemodel.ClassDiagramVisitor):
 
+    class RootPrinter(Printer):
+
+        def __init__(self, context):
+            super(Generator.RootPrinter, self).__init__(context)
+        #enddef
+
+        def generate(self):
+            for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
+
+                finished_flag = PRINTER_FINISHED
+
+                self.context.begin_phase(phase)
+
+                for printer in self.printers:
+                    finished_flag &= printer.generate()
+
+                self.context.end_phase(phase)
+
+                if finished_flag == PRINTER_FINISHED:
+                    break
+
+            return PRINTER_FINISHED
+        #enddef
+
+    #endclass
+
+    class DiagramNodeGuard(object):
+
+        def __init__(self, printers_stack, root_printer_create):
+            assert printers_stack is not None
+            assert root_printer_create
+
+            self._printers_stack = printers_stack
+            self._root_printer_create = root_printer_create
+        #enddef
+
+        def __enter__(self):
+            if not self._printers_stack:
+                self._printers_stack.append(self._root_printer_create())
+        #enddef
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            assert len(self._printers_stack) > 0
+            if len(self._printers_stack) == 1:
+                root_printer = self._printers_stack.pop()
+                assert isinstance(root_printer, Generator.RootPrinter)
+                root_printer.generate()
+        #enddef
+
+    #endclass
+
     def __init__(self, args=None):
         super(Generator, self).__init__()
 
@@ -703,19 +788,29 @@ class Generator(codemodel.ClassDiagramVisitor):
     #enddef
 
     def visit_package(self, node):
-        self._printers_stack.append(NamespacePrinter(self._context, node))
+        def create_root_printer():
+            root_printer = self._create_root_printer()
+            root_printer.add_printer(IncludesPrinter(self._context))
+            return root_printer
+        #enddef
 
-        super(Generator, self).visit_package(node)
+        with self._create_node_scope(create_root_printer):
+            top_printer = self._top_printer()
+            assert top_printer
 
-        self._finalize_printer(self._printers_stack.pop())
+            self._printers_stack.append(NamespacePrinter(self._context, node))
+            super(Generator, self).visit_package(node)
+            top_printer.add_printer(self._printers_stack.pop())
     #enddef
 
     def visit_class(self, node):
-        self._printers_stack.append(ClassPrinter(self._context, node))
+        with self._create_node_scope():
+            top_printer = self._top_printer()
+            assert top_printer
 
-        super(Generator, self).visit_class(node)
-
-        self._finalize_printer(self._printers_stack.pop())
+            self._printers_stack.append(ClassPrinter(self._context, node))
+            super(Generator, self).visit_class(node)
+            top_printer.add_printer(self._printers_stack.pop())
     #enddef
 
 # TODO
@@ -734,26 +829,28 @@ class Generator(codemodel.ClassDiagramVisitor):
 #    #enddef
 
     def visit_attribute(self, node):
-        # FIXME This won't be always true. Parent printer probablu know what printer
-        # to instanitate.
-        self._printers_stack.append(ClassMemberPrinter(self._context, node))
+        with self._create_node_scope():
+            top_printer = self._top_printer()
+            assert top_printer
 
-        super(Generator, self).visit_attribute(node)
-
-        self._finalize_printer(self._printers_stack.pop())
+            # FIXME This won't be always true. Parent printer probablu know what printer
+            # to instanitate.
+            self._printers_stack.append(ClassMemberPrinter(self._context, node))
+            super(Generator, self).visit_attribute(node)
+            top_printer.add_printer(self._printers_stack.pop())
     #enddef
 
-    def _finalize_printer(self, printer):
-        if not self._printers_stack:
-            # The last printer (the root one), output the code.
-            for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
-                self._context.begin_phase(phase)
-                if printer.generate() == PRINTER_FINISHED:
-                    break
-                self._context.end_phase(phase)
-        else:
-            # Not everything finalized yet, continue.
-            self._printers_stack[-1].add_printer(printer)
+    def _create_node_scope(self, root_printer_create=None):
+        return Generator.DiagramNodeGuard(self._printers_stack,
+                root_printer_create if root_printer_create is not None else self._create_root_printer)
+    #enddef
+
+    def _create_root_printer(self):
+        return Generator.RootPrinter(self._context)
+    #enddef
+
+    def _top_printer(self):
+        return self._printers_stack[-1] if self._printers_stack else None
     #enddef
 
 #endclass
