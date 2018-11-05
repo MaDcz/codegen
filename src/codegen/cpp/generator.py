@@ -127,27 +127,31 @@ cpp_types = {
 def refine_cpp_type(cpp_type):
     is_fundamental = True
     refined_parts = []
-    for part in cpp_type.split(" "):
-        if not part:
-            continue
+    if len(cpp_type) == 1:
+        for part in cpp_type[0].split(" "):
+            if not part:
+                continue
 
-        if part not in cpp_fundamental_types:
-            is_fundamental = False
-            break
+            if part not in cpp_fundamental_types:
+                is_fundamental = False
+                break
 
-        if part == "signed" or part == "unsigned":
-            refined_parts.insert(part, 0)
-        else:
-            refined_parts.append(part)
-    #endfor
+            if part == "signed" or part == "unsigned":
+                refined_parts.insert(part, 0)
+            else:
+                refined_parts.append(part)
+        #endfor
+    else:
+        is_fundamental = False
+    #endif
 
     if is_fundamental:
         refined_type = cpp_fundamental_types.get(" ".join(refined_parts), "")
         if not refined_type:
-            raise RuntimeError("Failed to refined C++ type ({})".format(cpp_type))
+            raise RuntimeError("Failed to refined C++ type ({})".format(cpp_type[0]))
         return refined_type
     else:
-        return cpp_type
+        return "::".join(cpp_type)
 #enddef
 
 class Context(object):
@@ -532,7 +536,7 @@ class ClassMemberPrinter(NodePrinter):
     def __init__(self, context, node):
         super(ClassMemberPrinter, self).__init__(context, node)
 
-        self._base_type = refine_cpp_type(node.attributes.get("type", ""))
+        self._base_type = refine_cpp_type(node.attributes.get("type", []))
         self._is_repeated = node.attributes.get("is_repeated", False)
         self._type = "std::vector<{}>".format(self._base_type) if self._is_repeated else self._base_type
         self._type_is_fundamental = not self._is_repeated and self._base_type in cpp_fundamental_types
