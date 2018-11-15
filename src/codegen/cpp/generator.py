@@ -5,6 +5,25 @@ class Output(object):
     pass
 #enddef
 
+def load_index_from_file(fpath):
+    ret = {}
+
+    with open(fpath, "r") as f:
+        for ln in f:
+            key_value = ln.rstrip().split(" ", maxsplit=1)
+            if len(key_value) != 2:
+                continue
+            ret[key_value[0]] = key_value[1]
+
+    return ret
+#enddef
+
+def save_index_to_file(index, fpath):
+    with open(fpath, "w") as f:
+        for key, value in index.items():
+            print(key + " " + value, file=f)
+#enddef
+
 class Options(object):
 
     def __init__(self, args):
@@ -148,11 +167,69 @@ def refine_cpp_type(cpp_type):
     if is_fundamental:
         refined_type = cpp_fundamental_types.get(" ".join(refined_parts), "")
         if not refined_type:
-            raise RuntimeError("Failed to refined C++ type ({})".format(cpp_type[0]))
+            raise RuntimeError("Failed to refine C++ type ({})".format(cpp_type[0]))
         return refined_type
     else:
-        return "::".join(cpp_type)
+        return cpp_type
 #enddef
+
+class IncludeTypesRegister(object):
+
+    def __init__(self):
+        self._register = []
+    #enddef
+
+    def add(self, t, p=None):
+        self._register.append({ "type": t, "printer": p })
+    #enddef
+
+    def resolve(self):
+        ret = set()
+        for entry in self._register:
+            # Convert the type to string. Note that it could be relative.
+            # TODO Add support for absolute types starting with '::'.
+            type_str = "::".join(entry["type"])
+
+            # Get the namespace in which the type was introduced.
+            context_ns = []
+            printer = entry["printer"]
+            while printer is not None:
+                if isinstance(printer, NamespacePrinter) or \
+                        isinstance(printer, ClassPrinter):
+                    name = printer.node.attributes.get("name", "")
+                    if name:
+                        context_ns.insert(0, name)
+                printer = printer.parent
+            #endwhile
+
+            # Resolve the type, it has to be registered in advance.
+            full_type_str = ""
+            for i in reversed(range(len(context_ns) + 1)):
+                tmp = "::".join(context_ns[0:i] + [ type_str ])
+                if tmp in cpp_types:
+                    full_type_str = tmp
+                    break
+            #endfor
+
+            if not full_type_str:
+                raise RuntimeError("Cannot resolve '{}' type in '{}' namespace.".format(type_str, "::".join(context_ns)))
+
+            print("DBG Resolved '{}' type in '{}' namespace to '{}'.".format(type_str, "::".join(context_ns), full_type_str), file=sys.stderr)
+            ret.add(full_type_str)
+        #endfor
+
+        return ret
+    #enddef
+
+    def debug(self):
+        if self._register:
+            print("DBG >>>>>>>>>> Include types register content", file=sys.stderr)
+            for entry in self._register:
+                print("DBG type: {} printer: {}".format(entry["type"], str(entry["printer"])), file=sys.stderr)
+            print("DBG <<<<<<<<<<", file=sys.stderr)
+    #enddef
+
+#endclass
 
 class Context(object):
 
@@ -162,7 +239,10 @@ class Context(object):
         self._printers_data = {}
         self.__phases_stack = []
         self.__namespaces_stack = []
-        self._used_types = []
+        self._used_types = IncludeTypesRegister()
+        self.__index = None
+
+        self._load_index()
     #enddef
 
     @property
@@ -224,6 +304,45 @@ class Context(object):
         return self._used_types
     #enddef
 
+    def _load_index(self):
+        assert self.__index is None
+
+        # Try to load index file if specified through an option.
+        if self._options.args.index: # TODO Don't use args in options.
+            try:
+                self.__index = load_index_from_file(self._options.args.index)
+            except FileNotFoundError:
+                pass
+
+        # Start with empty index if we don't have an index file.
+        if self.__index is None:
+            self.__index = {}
+
+        # Debug.
+        if self.__index:
+            print("DBG >>>>>>>>>> Index file '{}' content".format(self._options.args.index), file=sys.stderr)
+            for key, value in self.__index.items():
+                print("Found '{}' in index file '{}'".format(key, value), file=sys.stderr)
+                if key not in cpp_types:
+                    cpp_types[key] = { "include": '"' + value + '"' }
+                else:
+                    assert key not in cpp_types
+            print("DBG <<<<<<<<<<", file=sys.stderr)
+        #endif
+    #enddef
+
+    @property
+    def index(self):
+        assert self.__index is not None
+        return self.__index
+    #enddef
+
+    def save_index(self):
+        # TODO Work with index more nicely. Save it only if there are some changes.
+        # TODO Locking while writing.
+        if self.__index is not None and self._options.args.index:
+            save_index_to_file(self.__index, self._options.args.index)
+    #enddef
 #endclass
 
 class Printer(object):
@@ -263,12 +382,12 @@ class Printer(object):
     #enddef
 
     def find_parent(self, cond):
-        parent = self.parent()
+        parent = self.parent
         while parent is not None:
             if cond(parent):
                 break
             else:
-                parent = parent.parent()
+                parent = parent.parent
         #endwhile
 
         return parent
@@ -325,18 +444,25 @@ class IncludesPrinter(Printer):
 
     def generate(self):
         if self.context.in_phase(PHASE_HEADER_GEN):
-            used_types = set(self.context.used_types)
-            if used_types:
-                for used_type in used_types:
-                    include = cpp_types.get(used_type, {}).get("include", "")
-                    if include:
-                        self.write("#include ")
-                        self.writeln(include)
+            self._generate_header_includes()
         elif self.context.in_phase(PHASE_SOURCE_GEN):
-            self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
-        #endif
-
+            self._generate_source_includes()
         return PRINTER_FINISHED
+    #enddef
+
+    def _generate_header_includes(self):
+        self.context.used_types.debug()
+        used_types = self.context.used_types.resolve()
+        for used_type in used_types:
+            assert used_type in cpp_types
+            include = cpp_types[used_type].get("include", "")
+            if include:
+                self.write("#include ")
+                self.writeln(include)
+    #enddef
+
+    def _generate_source_includes(self):
+        self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
     #enddef
 
 #endclass
@@ -391,6 +517,29 @@ class ClassPrinter(NodePrinter):
         super(ClassPrinter, self).__init__(context, node)
     #enddef
 
+    def set_parent(self, printer):
+        super(ClassPrinter, self).set_parent(printer)
+
+        # Register the printer between known types.
+        full_name = []
+        printer = self
+        while printer is not None:
+            if isinstance(printer, NamespacePrinter) or \
+                    isinstance(printer, ClassPrinter):
+                name = printer.node.attributes.get("name", "")
+                if name:
+                    full_name.insert(0, name)
+            printer = printer.parent
+        #endwhile
+
+        full_name_str = "::".join(full_name)
+        if full_name_str not in cpp_types:
+            cpp_types[full_name_str] = {}
+            print("DBG Registered '{}' between known types.".format(full_name_str), file=sys.stderr)
+        else:
+            raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
+    #enddef
+
     def generate(self):
 
         SECTION_NONE = 0
@@ -408,9 +557,9 @@ class ClassPrinter(NodePrinter):
 
                 class cpp:
                     pimpl = self.node.attributes.get("cpp", {}).get("pimpl", False)
-                #endclass data.node_attrs.cpp
-            #endclass data.node_attrs
-        #endclass data
+                #endclass
+            #endclass
+        #endclass
 
         if not data.node_attrs.name:
             raise RuntimeError("Missing or empty 'name' attribute of a 'class' node")
@@ -476,6 +625,18 @@ class ClassPrinter(NodePrinter):
             self.context.end_phase(PHASE_CLASS_DECL)
             data.finished_flag = PRINTER_NOT_FINISHED
 
+            full_name = []
+            ns_or_class_cond = \
+                    lambda p: isinstance(p, NamespacePrinter) or isinstance(p, ClassPrinter)
+            ns_or_class = self
+            while ns_or_class:
+                name = ns_or_class.node.attributes.get("name", "")
+                assert name
+                full_name.insert(0, name)
+                ns_or_class = ns_or_class.find_parent(ns_or_class_cond)
+            self.context.index["::".join(full_name)] = self.context.options.header_output_filepath()
+        #endif
+
         if self.context.in_phase(PHASE_SOURCE_GEN):
             if data.node_attrs.cpp.pimpl:
                 # Declare pimpl class.
@@ -538,12 +699,16 @@ class ClassMemberPrinter(NodePrinter):
 
         self._base_type = refine_cpp_type(node.attributes.get("type", []))
         self._is_repeated = node.attributes.get("is_repeated", False)
-        self._type = "std::vector<{}>".format(self._base_type) if self._is_repeated else self._base_type
-        self._type_is_fundamental = not self._is_repeated and self._base_type in cpp_fundamental_types
-        self._default = "" if not self._type_is_fundamental else "false" if self._type == "bool" else "0"
+        base_type_is_fundamental = isinstance(self._base_type, str) # TODO Test the string properly for Python 2 and 3
+        base_type_str = self._base_type if base_type_is_fundamental else "::".join(self._base_type)
+        self._type_is_fundamental = not self._is_repeated and base_type_is_fundamental
+        self._type_str = "std::vector<{}>".format(base_type_str) if self._is_repeated else base_type_str
+        self._default_value = "" if not self._type_is_fundamental else "false" if self._type_str == "bool" else "0"
 
+        if not base_type_is_fundamental:
+            self.context.used_types.add(self._base_type, self)
         if self._is_repeated:
-            self.context.used_types.append("std::vector")
+            self.context.used_types.add([ "std", "vector" ])
     #enddef
 
     def generate(self):
@@ -560,16 +725,16 @@ class ClassMemberPrinter(NodePrinter):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
                     # TODO Use format() in a better way (arguments could be preparend in advance).
                     # TODO Use ''' style string.
-                    self.writeln("  {} {}() const;".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  {} {}() const;".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
                     if not pimpl:
                         # TODO Initialization (default value).
-                        self.write("  {} m_{}".format(self._type, self.node.attributes.get("name", "")))
-                        if self._default:
-                            self.write(" = {}".format(self._default))
+                        self.write("  {} m_{}".format(self._type_str, self.node.attributes.get("name", "")))
+                        if self._default_value:
+                            self.write(" = {}".format(self._default_value))
                         self.writeln(";")
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
@@ -577,16 +742,16 @@ class ClassMemberPrinter(NodePrinter):
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     # TODO Use format() in a better way (arguments could be preparend in advance).
                     # TODO Use ''' style string.
-                    self.writeln("  {}& {}();".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  {}& {}();".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
-                    self.writeln("  const {}& {}() const;".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  const {}& {}() const;".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
                     if not pimpl:
                         # TODO Initialization (default value).
-                        self.writeln("  {} m_{};".format(self._type, self.node.attributes.get("name", "")))
+                        self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
@@ -599,7 +764,7 @@ class ClassMemberPrinter(NodePrinter):
                     # TODO Distinguish between types ('value' vs. 'reference' type).
                     # TODO Use format() in a better way (arguments could be preparend in advance).
                     # TODO Use ''' style string.
-                    self.writeln("{} {}::{}() const".format(self._type, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                    self.writeln("{} {}::{}() const".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
                     self.writeln("{")
                     if not pimpl:
                         self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
@@ -608,7 +773,7 @@ class ClassMemberPrinter(NodePrinter):
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("void {}::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type_str))
                     self.writeln("{")
                     if not pimpl:
                         self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
@@ -622,7 +787,7 @@ class ClassMemberPrinter(NodePrinter):
                     # TODO Distinguish between types ('value' vs. 'reference' type).
                     # TODO Use format() in a better way (arguments could be preparend in advance).
                     # TODO Use ''' style string.
-                    self.writeln("{}& {}::{}()".format(self._type, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                    self.writeln("{}& {}::{}()".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
                     self.writeln("{")
                     if not pimpl:
                         self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
@@ -630,7 +795,7 @@ class ClassMemberPrinter(NodePrinter):
                         self.writeln("  return m_impl->{}();".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
-                    self.writeln("const {}& {}::{}() const".format(self._type, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                    self.writeln("const {}& {}::{}() const".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
                     self.writeln("{")
                     if not pimpl:
                         self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
@@ -639,7 +804,7 @@ class ClassMemberPrinter(NodePrinter):
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
-                    self.writeln("void {}::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type_str))
                     self.writeln("{")
                     if not pimpl:
                         self.writeln("  m_{} = std::move(value);".format(self.node.attributes.get("name", "")))
@@ -658,25 +823,25 @@ class ClassMemberPrinter(NodePrinter):
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
-                    self.writeln("  {} {}() const;".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  {} {}() const;".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
-                    self.write("  {} m_{}".format(self._type, self.node.attributes.get("name", "")))
-                    if self._default:
-                        self.write(" = {}".format(self._default))
+                    self.write("  {} m_{}".format(self._type_str, self.node.attributes.get("name", "")))
+                    if self._default_value:
+                        self.write(" = {}".format(self._default_value))
                     self.writeln(";")
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
-                    self.writeln("  {}& {}();".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  {}& {}();".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type))
+                    self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
-                    self.writeln("  {} m_{};".format(self._type, self.node.attributes.get("name", "")))
+                    self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
@@ -689,12 +854,12 @@ class ClassMemberPrinter(NodePrinter):
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
-                    self.writeln("{} {}::Impl::{}() const".format(self._type, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                    self.writeln("{} {}::Impl::{}() const".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
                     self.writeln("{")
                     self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("void {}::Impl::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::Impl::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type_str))
                     self.writeln("{")
                     self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
@@ -702,14 +867,14 @@ class ClassMemberPrinter(NodePrinter):
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
-                    self.writeln("{}& {}::Impl::{}()".format(self._type, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
+                    self.writeln("{}& {}::Impl::{}()".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
                     self.writeln("{")
                     self.writeln("  return m_{};".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_CONST_GETTER:
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
-                    self.writeln("void {}::Impl::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type))
+                    self.writeln("void {}::Impl::{}({} value)".format(self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", ""), self._type_str))
                     self.writeln("{")
                     self.writeln("  m_{} = std::move(value);".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
@@ -740,19 +905,24 @@ class Generator(codemodel.ClassDiagramVisitor):
         #enddef
 
         def generate(self):
-            for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
+            if self.printers:
+                for phase in [ PHASE_HEADER_GEN, PHASE_SOURCE_GEN ]:
 
-                finished_flag = PRINTER_FINISHED
+                    finished_flag = PRINTER_FINISHED
 
-                self.context.begin_phase(phase)
+                    self.context.begin_phase(phase)
 
-                for printer in self.printers:
-                    finished_flag &= printer.generate()
+                    for printer in self.printers:
+                        finished_flag &= printer.generate()
 
-                self.context.end_phase(phase)
+                    self.context.end_phase(phase)
 
-                if finished_flag == PRINTER_FINISHED:
-                    break
+                    if finished_flag == PRINTER_FINISHED:
+                        break
+                #endfor
+
+                self.context.save_index()
+            #endif
 
             return PRINTER_FINISHED
         #enddef
@@ -776,10 +946,6 @@ class Generator(codemodel.ClassDiagramVisitor):
 
         def __exit__(self, exc_type, exc_value, traceback):
             assert len(self._printers_stack) > 0
-            if len(self._printers_stack) == 1:
-                root_printer = self._printers_stack.pop()
-                assert isinstance(root_printer, Generator.RootPrinter)
-                root_printer.generate()
         #enddef
 
     #endclass
@@ -791,6 +957,15 @@ class Generator(codemodel.ClassDiagramVisitor):
         self._printers_stack = []
     #enddef
 
+    def run(self, node):
+        node.accept(self)
+
+        if len(self._printers_stack) == 1:
+            root_printer = self._printers_stack.pop()
+            assert isinstance(root_printer, Generator.RootPrinter)
+            root_printer.generate()
+    #enddef
+
     def visit_package(self, node):
         def create_root_printer():
             root_printer = self._create_root_printer()
@@ -798,13 +973,19 @@ class Generator(codemodel.ClassDiagramVisitor):
             return root_printer
         #enddef
 
-        with self._create_node_scope(create_root_printer):
-            top_printer = self._top_printer()
-            assert top_printer
+        if node.attributes.get("name", ""): # TODO Distinguish somehow the package node in the parser.
+            with self._create_node_scope(create_root_printer):
+                top_printer = self._top_printer()
+                assert top_printer
 
-            self._printers_stack.append(NamespacePrinter(self._context, node))
+                printer = NamespacePrinter(self._context, node)
+                top_printer.add_printer(printer)
+
+                self._printers_stack.append(printer)
+                super(Generator, self).visit_package(node)
+                self._printers_stack.pop()
+        else:
             super(Generator, self).visit_package(node)
-            top_printer.add_printer(self._printers_stack.pop())
     #enddef
 
     def visit_class(self, node):
@@ -812,9 +993,12 @@ class Generator(codemodel.ClassDiagramVisitor):
             top_printer = self._top_printer()
             assert top_printer
 
-            self._printers_stack.append(ClassPrinter(self._context, node))
+            printer = ClassPrinter(self._context, node)
+            top_printer.add_printer(printer)
+
+            self._printers_stack.append(printer)
             super(Generator, self).visit_class(node)
-            top_printer.add_printer(self._printers_stack.pop())
+            self._printers_stack.pop()
     #enddef
 
 # TODO
@@ -839,9 +1023,12 @@ class Generator(codemodel.ClassDiagramVisitor):
 
             # FIXME This won't be always true. Parent printer probablu know what printer
             # to instanitate.
-            self._printers_stack.append(ClassMemberPrinter(self._context, node))
+            printer = ClassMemberPrinter(self._context, node)
+            top_printer.add_printer(printer)
+
+            self._printers_stack.append(printer)
             super(Generator, self).visit_attribute(node)
-            top_printer.add_printer(self._printers_stack.pop())
+            self._printers_stack.pop()
     #enddef
 
     def _create_node_scope(self, root_printer_create=None):
