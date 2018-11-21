@@ -34,7 +34,7 @@ class Options(object):
     #enddef
 
     def header_output_filepath(self):
-        return self.args.output + ".hpp" if self.args.output else ""
+        return self.args.output_header + ".hpp" if self.args.output_header else ""
     #enddef
 
     def header_output_filename(self):
@@ -47,17 +47,17 @@ class Options(object):
     #enddef
 
     def header_output_file(self):
-        if self.args.output:
-            if self._header_output_file is None:
-                self._header_output_file = \
-                        open(self.header_output_filepath(), "w")
-            return self._header_output_file
-        else:
-            return sys.stdout
+        if self._header_output_file is None:
+            filepath = self.header_output_filepath()
+            self._header_output_file = \
+                open(filepath, "w") if filepath else sys.stdout
+
+        assert self._header_output_file is not None
+        return self._header_output_file
     #enddef
 
     def source_output_filepath(self):
-        return self.args.output + ".cpp" if self.args.output else ""
+        return self.args.output_source + ".cpp" if self.args.output_source else ""
     #enddef
 
     def source_output_filename(self):
@@ -70,13 +70,13 @@ class Options(object):
     #enddef
 
     def source_output_file(self):
-        if self.args.output:
-            if self._source_output_file is None:
-                self._source_output_file = \
-                        open(self.source_output_filepath(), "w")
-            return self._source_output_file
-        else:
-            return sys.stdout
+        if self._source_output_file is None:
+            filepath = self.source_output_filepath()
+            self._source_output_file = \
+                open(filepath, "w") if filepath else sys.stdout
+
+        assert self._source_output_file is not None
+        return self._source_output_file
     #enddef
 
 #enddef
