@@ -1,7 +1,7 @@
-#ifndef __MAD_CODEGEN_TREE_H__
-#define __MAD_CODEGEN_TREE_H__
+#ifndef __MAD_CODEGEN_TREE_HPP__
+#define __MAD_CODEGEN_TREE_HPP__
 
-#include <mad/interfaces/tree.h>
+#include <mad/interfaces/tree.hpp>
 
 namespace mad { namespace codegen { namespace tree {
 
@@ -24,4 +24,4 @@ class FloatNode : public ValueNode<float>
 
 }}} // namespace mad::codegen::tree
 
-#endif // __MAD_CODEGEN_TREE_H__
+#endif // __MAD_CODEGEN_TREE_HPP__

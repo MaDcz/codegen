@@ -92,11 +92,13 @@ PHASE_CLASS_IMPL        = PHASE_CLASS + 2
 PHASE_CLASS_PIMPL_DECL  = PHASE_CLASS + 3
 PHASE_CLASS_PIMPL_IMPL  = PHASE_CLASS + 4
 
-PHASE_CLASS_MEMBER              = 20
-PHASE_CLASS_MEMBER_GETTER       = PHASE_CLASS_MEMBER + 1
-PHASE_CLASS_MEMBER_CONST_GETTER = PHASE_CLASS_MEMBER + 2
-PHASE_CLASS_MEMBER_SETTER       = PHASE_CLASS_MEMBER + 3
-PHASE_CLASS_MEMBER_VARIABLE     = PHASE_CLASS_MEMBER + 4
+PHASE_CLASS_MEMBER                    = 20
+PHASE_CLASS_MEMBER_GETTER             = PHASE_CLASS_MEMBER + 1
+PHASE_CLASS_MEMBER_CONST_GETTER       = PHASE_CLASS_MEMBER + 2
+PHASE_CLASS_MEMBER_SETTER             = PHASE_CLASS_MEMBER + 3
+PHASE_CLASS_MEMBER_PUBLIC_VARIABLE    = PHASE_CLASS_MEMBER + 4
+PHASE_CLASS_MEMBER_PROTECTED_VARIABLE = PHASE_CLASS_MEMBER + 5
+PHASE_CLASS_MEMBER_PRIVATE_VARIABLE   = PHASE_CLASS_MEMBER + 6
 
 PRINTER_FINISHED = 1
 PRINTER_NOT_FINISHED = 0
@@ -138,6 +140,18 @@ cpp_fundamental_types = {
 }
 
 cpp_types = {
+    "mad::codegen::CompositeProperty" : {
+        "include" : "<mad/codegen/compositeproperty.hpp>"
+    },
+    "mad::codegen::CompositesListProperty" : {
+        "include" : "<mad/codegen/compositeslistproperty.hpp>"
+    },
+    "mad::codegen::ValueProperty" : {
+        "include" : "<mad/codegen/valueproperty.hpp>"
+    },
+    "mad::codegen::ValuesListProperty" : {
+        "include" : "<mad/codegen/valueslistproperty.hpp>"
+    },
     "std::vector" : {
         "include" : "<vector>"
     }
@@ -262,6 +276,7 @@ class Context(object):
     #enddef
 
     def begin_phase(self, phase):
+        print("DBG >>>>>>>>>> Phase {}".format(phase), file=sys.stderr)
         self.__phases_stack.append(phase)
         if phase == PHASE_HEADER_GEN:
             self._out = self._options.header_output_file()
@@ -270,6 +285,7 @@ class Context(object):
     #enddef
 
     def end_phase(self, phase):
+        print("DBG <<<<<<<<<< Phase {}".format(phase), file=sys.stderr)
         assert self.__phases_stack
         assert self.__phases_stack[-1] == phase
         self.__phases_stack.pop()
@@ -405,6 +421,10 @@ class Printer(object):
     #enddef
 
     def writeln(self, *args):
+        debug_line = ""
+        for arg in args:
+            debug_line += str(arg)
+        print("DBG writeln('{}')".format(debug_line), file=sys.stderr)
         self.write(*args)
         print(file=self.__context.out)
     #enddef
@@ -567,32 +587,47 @@ class ClassPrinter(NodePrinter):
         for printer in self.printers:
             data.node_attrs.cpp.pimpl |= printer.node.attributes.get("cpp", {}).get("pimpl", False)
 
+        def switch_section(section):
+            if data.section == section:
+                return
+
+            if section == SECTION_NONE:
+                data.section = SECTION_NONE
+            elif section == SECTION_PUBLIC:
+                self.writeln("public:")
+                data.section = SECTION_PUBLIC
+            elif section == SECTION_PROTECTED:
+                self.writeln("protected:")
+                data.section = SECTION_PROTECTED
+            elif section == SECTION_PRIVATE:
+                self.writeln("private:")
+                data.section = SECTION_PRIVATE
+            else:
+                raise Exception("Invalid section ({}), need one of SECTION_PUBLIC, SECTION_PROTECTED or SECTION_PRIVATE.".format(section))
+        #enddef
+
         def generate_content(phases):
-            if self.printers:
-                if (self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL)) \
-                        and data.section != SECTION_PUBLIC:
-                    self.writeln("public:")
-                    data.section = SECTION_PUBLIC
-
+            for phase in phases:
                 for printer in self.printers:
-                    for phase in phases:
-                        if (self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL)) \
-                                and phase == PHASE_CLASS_MEMBER_VARIABLE \
-                                and data.section != SECTION_PRIVATE:
-                            self.writeln("private:")
-                            data.section = SECTION_PRIVATE
+                    if self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL):
+                        if phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
+                            switch_section(SECTION_PUBLIC)
+                        elif phase == PHASE_CLASS_MEMBER_PROTECTED_VARIABLE:
+                            switch_section(SECTION_PROTECTED)
+                        elif phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
+                            switch_section(SECTION_PRIVATE)
+                    #endif
 
-                        self.context.begin_phase(phase)
+                    self.context.begin_phase(phase)
 
-                        # FIXME This isn't sufficient, members will indicate that they didn't
-                        # finished in the very beginning and it will be carried over through
-                        # the whole process in the return value.
-                        data.finished_flag &= printer.generate()
+                    # FIXME This isn't sufficient, members will indicate that they didn't
+                    # finished in the very beginning and it will be carried over through
+                    # the whole process in the return value.
+                    data.finished_flag &= printer.generate()
 
-                        self.context.end_phase(phase)
-                    #endfor
+                    self.context.end_phase(phase)
                 #endfor
-            #endif
+            #endfor
         #enddef
 
         # TODO Structs isn't supported properly, generated as classes at the moment.
@@ -602,10 +637,9 @@ class ClassPrinter(NodePrinter):
             self.writeln("struct " if data.node_attrs.is_struct else "class ", data.node_attrs.name)
             self.writeln("{")
             # Constructor & destructor.
+            if data.section != SECTION_PUBLIC:
+                switch_section(SECTION_PUBLIC)
             if data.node_attrs.cpp.pimpl:
-                if data.section != SECTION_PUBLIC:
-                    self.writeln("public:")
-                    data.section = SECTION_PUBLIC
                 self.writeln("  {}();".format(data.node_attrs.name))
                 self.writeln("  virtual ~{}();".format(data.node_attrs.name))
             else:
@@ -614,10 +648,15 @@ class ClassPrinter(NodePrinter):
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                PHASE_CLASS_MEMBER_CONST_GETTER,
                                PHASE_CLASS_MEMBER_SETTER ])
-            generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
+
+            switch_section(SECTION_NONE)
+
+            generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
+                               PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
+                               PHASE_CLASS_MEMBER_PRIVATE_VARIABLE ])
 
             if data.node_attrs.cpp.pimpl:
-                self.writeln("private:")
+                switch_section(SECTION_PRIVATE)
                 self.writeln("  class Impl;")
                 self.writeln("  Impl* m_impl = nullptr;")
 
@@ -648,7 +687,12 @@ class ClassPrinter(NodePrinter):
                 generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                    PHASE_CLASS_MEMBER_CONST_GETTER,
                                    PHASE_CLASS_MEMBER_SETTER ])
-                generate_content([ PHASE_CLASS_MEMBER_VARIABLE ])
+
+                switch_section(SECTION_NONE)
+
+                generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
+                                   PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
+                                   PHASE_CLASS_MEMBER_PRIVATE_VARIABLE ])
 
                 self.writeln("};")
                 self.context.end_phase(PHASE_CLASS_PIMPL_DECL)
@@ -692,6 +736,53 @@ class ClassPrinter(NodePrinter):
 
 #endclass
 
+# TODO Modify this to fit its name and use it instead of the former implementation.
+class ClassMemberPrinterAsProperty(NodePrinter):
+
+    def __init__(self, context, node):
+        super(ClassMemberPrinterAsProperty, self).__init__(context, node)
+
+        self._base_type = refine_cpp_type(node.attributes.get("type", []))
+        self._is_repeated = node.attributes.get("is_repeated", False)
+        base_type_is_fundamental = isinstance(self._base_type, str) # TODO Test the string properly for Python 2 and 3
+        base_type_str = self._base_type if base_type_is_fundamental else "::".join(self._base_type)
+        self._type_is_fundamental = not self._is_repeated and base_type_is_fundamental
+        if self._type_is_fundamental:
+            if self._is_repeated:
+                self.context.used_types.add([ "mad", "codegen", "ValuesListProperty" ], self)
+                self._type_str = "mad::codegen::ValuesListProperty<{}>".format(base_type_str)
+            else:
+                self.context.used_types.add([ "mad", "codegen", "ValueProperty" ], self)
+                self._type_str = "mad::codegen::ValueProperty<{}>".format(base_type_str)
+        else:
+            self.context.used_types.add(self._base_type, self)
+            if self._is_repeated:
+                self.context.used_types.add([ "mad", "codegen", "ListProperty" ], self)
+                self._type_str = "mad::codegen::ListProperty<{}>".format(base_type_str)
+            else:
+                self.context.used_types.add([ "mad", "codegen", "Property" ], self)
+                self._type_str = "mad::codegen::Property<{}>".format(base_type_str)
+        #endif
+        self._default_value = "" if not self._type_is_fundamental else "false" if self._type_str == "bool" else "0"
+    #enddef
+
+    def generate(self):
+        finished_flag = PRINTER_FINISHED
+
+        def generate_class_decl():
+            if self.context.current_phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
+                # TODO Initialization (default value).
+                self.writeln("  {} {};".format(self._type_str, self.node.attributes.get("name", "")))
+        #enddef
+
+        if self.context.in_phase(PHASE_CLASS_DECL):
+            generate_class_decl()
+
+        return finished_flag
+    #enddef
+
+#endclass
+
 class ClassMemberPrinter(NodePrinter):
 
     def __init__(self, context, node):
@@ -729,7 +820,7 @@ class ClassMemberPrinter(NodePrinter):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
                     self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
-                elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                elif self.context.current_phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
                     if not pimpl:
                         # TODO Initialization (default value).
                         self.write("  {} m_{}".format(self._type_str, self.node.attributes.get("name", "")))
@@ -748,7 +839,7 @@ class ClassMemberPrinter(NodePrinter):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     # TODO Also consider R-value for move semantic.
                     self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
-                elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                elif self.context.current_phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
                     if not pimpl:
                         # TODO Initialization (default value).
                         self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
@@ -826,7 +917,7 @@ class ClassMemberPrinter(NodePrinter):
                     self.writeln("  {} {}() const;".format(self._type_str, self.node.attributes.get("name", "")))
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
-                elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                elif self.context.current_phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
                     self.write("  {} m_{}".format(self._type_str, self.node.attributes.get("name", "")))
                     if self._default_value:
                         self.write(" = {}".format(self._default_value))
@@ -840,7 +931,7 @@ class ClassMemberPrinter(NodePrinter):
                     pass
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_SETTER:
                     self.writeln("  void {}({} value);".format(self.node.attributes.get("name", ""), self._type_str))
-                elif self.context.current_phase == PHASE_CLASS_MEMBER_VARIABLE:
+                elif self.context.current_phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
                     self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
                 else:
                     raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
@@ -1023,7 +1114,7 @@ class Generator(codemodel.ClassDiagramVisitor):
 
             # FIXME This won't be always true. Parent printer probablu know what printer
             # to instanitate.
-            printer = ClassMemberPrinter(self._context, node)
+            printer = ClassMemberPrinterAsProperty(self._context, node)
             top_printer.add_printer(printer)
 
             self._printers_stack.append(printer)
