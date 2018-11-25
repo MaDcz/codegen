@@ -1,5 +1,14 @@
 import sys, copy
+from contextlib import contextmanager
+
 import codemodel
+
+# This is a workaround for 'nullcontext' missing in the 'contextlib' module. It was introduced
+# only in Python version 3.7.
+@contextmanager
+def nullcontext():
+    yield
+#enddef
 
 class Output(object):
     pass
@@ -255,6 +264,7 @@ class Context(object):
         self.__namespaces_stack = []
         self._used_types = IncludeTypesRegister()
         self.__index = None
+        self.__tempting_writes_buffer = []
 
         self._load_index()
     #enddef
@@ -359,9 +369,35 @@ class Context(object):
         if self.__index is not None and self._options.args.index:
             save_index_to_file(self.__index, self._options.args.index)
     #enddef
+
+    @contextmanager
+    def tempting_writes_buffer_append(self, write):
+        print("DBG Appending tempting write {}.".format(len(self.__tempting_writes_buffer)), file=sys.stderr)
+        clear = bool(not self.__tempting_writes_buffer)
+        self.__tempting_writes_buffer.append(write)
+        yield
+        if clear:
+            self.clear_tempting_writes()
+    #enddef
+
+    def flush_tempting_writes(self):
+        print("DBG Flushing {} tempting writes.".format(len(self.__tempting_writes_buffer)), file=sys.stderr)
+        tempting_writes_buffer = self.__tempting_writes_buffer
+        self.__tempting_writes_buffer = []
+        for write in tempting_writes_buffer:
+            write()
+    #enddef
+
+    def clear_tempting_writes(self):
+        del self.__tempting_writes_buffer[:]
+    #enddef
+
 #endclass
 
 class Printer(object):
+
+    WRITE_MODE_DEFAULT = 0
+    WRITE_FLAG_TEMPTING = 1
 
     def __init__(self, context):
         self.__context = context
@@ -415,18 +451,42 @@ class Printer(object):
                 "." if self_type.__module__ else "", self_type.__name__)
     #enddef
 
-    def write(self, *args):
-        for arg in args:
-            self.__context.out.write(str(arg))
+    def write(self, *args, mode=WRITE_MODE_DEFAULT, after_write=None):
+        def write_args():
+            for arg in args:
+                self.__context.out.write(str(arg))
+
+            if after_write:
+                after_write()
+        #enddef
+
+        if mode & Printer.WRITE_FLAG_TEMPTING:
+            return self.context.tempting_writes_buffer_append(write_args)
+        else:
+            self.context.flush_tempting_writes()
+            write_args()
     #enddef
 
-    def writeln(self, *args):
-        debug_line = ""
-        for arg in args:
-            debug_line += str(arg)
-        print("DBG writeln('{}')".format(debug_line), file=sys.stderr)
-        self.write(*args)
-        print(file=self.__context.out)
+    def writeln(self, *args, mode=WRITE_MODE_DEFAULT, after_write=None):
+        def write_args():
+            # TODO If debug requested.
+            debug_line = ""
+            for arg in args:
+                debug_line += str(arg)
+            print("DBG writeln('{}'). (tempting={})".format(debug_line, mode & Printer.WRITE_FLAG_TEMPTING), file=sys.stderr)
+
+            self.write(*args)
+            print(file=self.__context.out)
+
+            if after_write:
+                after_write()
+        #enddef
+
+        if mode & Printer.WRITE_FLAG_TEMPTING:
+            return self.context.tempting_writes_buffer_append(write_args)
+        else:
+            self.context.flush_tempting_writes()
+            write_args()
     #enddef
 
 #endclass
@@ -588,77 +648,100 @@ class ClassPrinter(NodePrinter):
             data.node_attrs.cpp.pimpl |= printer.node.attributes.get("cpp", {}).get("pimpl", False)
 
         def switch_section(section):
-            if data.section == section:
-                return
+            tempting_section = nullcontext()
 
-            if section == SECTION_NONE:
+            if data.section == section:
+                pass
+            elif section == SECTION_NONE:
                 data.section = SECTION_NONE
-            elif section == SECTION_PUBLIC:
-                self.writeln("public:")
-                data.section = SECTION_PUBLIC
-            elif section == SECTION_PROTECTED:
-                self.writeln("protected:")
-                data.section = SECTION_PROTECTED
-            elif section == SECTION_PRIVATE:
-                self.writeln("private:")
-                data.section = SECTION_PRIVATE
+            elif section in [SECTION_PUBLIC, SECTION_PROTECTED, SECTION_PRIVATE]:
+                # Note that the section variable has to be updated only after the write actually
+                # happens, otherwise it would be misleading.
+                def set_section():
+                    data.seciton = section
+                #enddef
+
+                if section == SECTION_PUBLIC:
+                    print("DBG Switching section to public.", file=sys.stderr)
+                    tempting_section = self.writeln("public:",
+                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            after_write=set_section)
+                elif section == SECTION_PROTECTED:
+                    print("DBG Switching section to protected.", file=sys.stderr)
+                    tempting_section = self.writeln("protected:",
+                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            after_write=set_section)
+                elif section == SECTION_PRIVATE:
+                    print("DBG Switching section to private.", file=sys.stderr)
+                    tempting_section = self.writeln("private:",
+                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            after_write=set_section)
             else:
-                raise Exception("Invalid section ({}), need one of SECTION_PUBLIC, SECTION_PROTECTED or SECTION_PRIVATE.".format(section))
+                raise Exception("Invalid section ({}), need one of SECTION_NONE, SECTION_PUBLIC, SECTION_PROTECTED or SECTION_PRIVATE.".format(section))
+
+            return tempting_section
         #enddef
 
         def generate_content(phases):
             for phase in phases:
-                for printer in self.printers:
-                    if self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL):
-                        if phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
-                            switch_section(SECTION_PUBLIC)
-                        elif phase == PHASE_CLASS_MEMBER_PROTECTED_VARIABLE:
-                            switch_section(SECTION_PROTECTED)
-                        elif phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
-                            switch_section(SECTION_PRIVATE)
-                    #endif
+                self.context.begin_phase(phase)
 
-                    self.context.begin_phase(phase)
+                tempting_section = nullcontext()
 
-                    # FIXME This isn't sufficient, members will indicate that they didn't
-                    # finished in the very beginning and it will be carried over through
-                    # the whole process in the return value.
-                    data.finished_flag &= printer.generate()
+                if self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL):
+                    if phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
+                        tempting_section = switch_section(SECTION_PUBLIC)
+                    elif phase == PHASE_CLASS_MEMBER_PROTECTED_VARIABLE:
+                        tempting_section = switch_section(SECTION_PROTECTED)
+                    elif phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
+                        tempting_section = switch_section(SECTION_PRIVATE)
+                #endif
 
-                    self.context.end_phase(phase)
-                #endfor
-            #endfor
+                with tempting_section:
+                    for printer in self.printers:
+                            # FIXME This isn't sufficient, members will indicate that they didn't
+                            # finished in the very beginning and it will be carried over through
+                            # the whole process in the return value.
+                            data.finished_flag &= printer.generate()
+                #endwith
+
+                self.context.end_phase(phase)
         #enddef
 
         # TODO Structs isn't supported properly, generated as classes at the moment.
 
         if self.context.in_phase(PHASE_HEADER_GEN):
+
+            # Start class/struct.
             self.context.begin_phase(PHASE_CLASS_DECL)
             self.writeln("struct " if data.node_attrs.is_struct else "class ", data.node_attrs.name)
             self.writeln("{")
+
             # Constructor & destructor.
-            if data.section != SECTION_PUBLIC:
-                switch_section(SECTION_PUBLIC)
-            if data.node_attrs.cpp.pimpl:
-                self.writeln("  {}();".format(data.node_attrs.name))
-                self.writeln("  virtual ~{}();".format(data.node_attrs.name))
-            else:
+            with switch_section(SECTION_PUBLIC):
+                if data.node_attrs.cpp.pimpl:
+                    self.writeln("  {}();".format(data.node_attrs.name))
                 self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
+            # Generate methods.
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                PHASE_CLASS_MEMBER_CONST_GETTER,
                                PHASE_CLASS_MEMBER_SETTER ])
 
-            switch_section(SECTION_NONE)
+            # Put member variables in a seperate public/protected/private sections.
+            with switch_section(SECTION_NONE):
+                pass
 
+            # Generate member variables.
             generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
                                PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
                                PHASE_CLASS_MEMBER_PRIVATE_VARIABLE ])
 
+            # Add private implementation member if needed.
             if data.node_attrs.cpp.pimpl:
-                switch_section(SECTION_PRIVATE)
-                self.writeln("  class Impl;")
-                self.writeln("  Impl* m_impl = nullptr;")
+                with switch_section(SECTION_PRIVATE):
+                    self.writeln("  class Impl;")
+                    self.writeln("  Impl* m_impl = nullptr;")
 
             self.writeln("};")
             self.context.end_phase(PHASE_CLASS_DECL)
@@ -676,10 +759,13 @@ class ClassPrinter(NodePrinter):
             self.context.index["::".join(full_name)] = self.context.options.header_output_filepath()
         #endif
 
+        # Reset section before source generation starts.
+        with switch_section(SECTION_NONE):
+            pass
+
         if self.context.in_phase(PHASE_SOURCE_GEN):
             if data.node_attrs.cpp.pimpl:
                 # Declare pimpl class.
-                data.section = SECTION_NONE
                 self.context.begin_phase(PHASE_CLASS_PIMPL_DECL)
                 self.writeln("class ", data.node_attrs.name, "::Impl")
                 self.writeln("{")
@@ -688,7 +774,8 @@ class ClassPrinter(NodePrinter):
                                    PHASE_CLASS_MEMBER_CONST_GETTER,
                                    PHASE_CLASS_MEMBER_SETTER ])
 
-                switch_section(SECTION_NONE)
+                with switch_section(SECTION_NONE):
+                    pass
 
                 generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
                                    PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
