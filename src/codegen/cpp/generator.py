@@ -102,12 +102,13 @@ PHASE_CLASS_PIMPL_DECL  = PHASE_CLASS + 3
 PHASE_CLASS_PIMPL_IMPL  = PHASE_CLASS + 4
 
 PHASE_CLASS_MEMBER                    = 20
-PHASE_CLASS_MEMBER_GETTER             = PHASE_CLASS_MEMBER + 1
-PHASE_CLASS_MEMBER_CONST_GETTER       = PHASE_CLASS_MEMBER + 2
-PHASE_CLASS_MEMBER_SETTER             = PHASE_CLASS_MEMBER + 3
-PHASE_CLASS_MEMBER_PUBLIC_VARIABLE    = PHASE_CLASS_MEMBER + 4
-PHASE_CLASS_MEMBER_PROTECTED_VARIABLE = PHASE_CLASS_MEMBER + 5
-PHASE_CLASS_MEMBER_PRIVATE_VARIABLE   = PHASE_CLASS_MEMBER + 6
+PHASE_CLASS_MEMBER_INIT               = PHASE_CLASS_MEMBER + 1
+PHASE_CLASS_MEMBER_GETTER             = PHASE_CLASS_MEMBER + 2
+PHASE_CLASS_MEMBER_CONST_GETTER       = PHASE_CLASS_MEMBER + 3
+PHASE_CLASS_MEMBER_SETTER             = PHASE_CLASS_MEMBER + 4
+PHASE_CLASS_MEMBER_PUBLIC_VARIABLE    = PHASE_CLASS_MEMBER + 5
+PHASE_CLASS_MEMBER_PROTECTED_VARIABLE = PHASE_CLASS_MEMBER + 6
+PHASE_CLASS_MEMBER_PRIVATE_VARIABLE   = PHASE_CLASS_MEMBER + 7
 
 PRINTER_FINISHED = 1
 PRINTER_NOT_FINISHED = 0
@@ -396,8 +397,10 @@ class Context(object):
 
 class Printer(object):
 
-    WRITE_MODE_DEFAULT = 0
     WRITE_FLAG_TEMPTING = 1
+
+    WRITE_MODE_DEFAULT = 0
+    WRITE_MODE_TEMPTING = WRITE_MODE_DEFAULT | WRITE_FLAG_TEMPTING
 
     def __init__(self, context):
         self.__context = context
@@ -664,17 +667,17 @@ class ClassPrinter(NodePrinter):
                 if section == SECTION_PUBLIC:
                     print("DBG Switching section to public.", file=sys.stderr)
                     tempting_section = self.writeln("public:",
-                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PROTECTED:
                     print("DBG Switching section to protected.", file=sys.stderr)
                     tempting_section = self.writeln("protected:",
-                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PRIVATE:
                     print("DBG Switching section to private.", file=sys.stderr)
                     tempting_section = self.writeln("private:",
-                            mode=Printer.WRITE_MODE_DEFAULT | Printer.WRITE_FLAG_TEMPTING,
+                            mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
             else:
                 raise Exception("Invalid section ({}), need one of SECTION_NONE, SECTION_PUBLIC, SECTION_PROTECTED or SECTION_PRIVATE.".format(section))
@@ -799,7 +802,23 @@ class ClassPrinter(NodePrinter):
             # Constructor & destructor.
             if data.node_attrs.cpp.pimpl:
                 self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
-                self.writeln("  : m_impl(new Impl)")
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write("  : ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                    with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                        self.writeln("m_impl(new Impl)")
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
                 self.writeln("{")
                 self.writeln("}")
                 self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
@@ -808,9 +827,28 @@ class ClassPrinter(NodePrinter):
                 self.writeln("  m_impl = nullptr;")
                 self.writeln("}")
             else:
+                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write("  : ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                self.writeln("{")
+                self.writeln("}")
                 self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
                 self.writeln("{")
                 self.writeln("}")
+            #endif
 
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
                                PHASE_CLASS_MEMBER_CONST_GETTER,
@@ -844,11 +882,11 @@ class ClassMemberPrinterAsProperty(NodePrinter):
         else:
             self.context.used_types.add(self._base_type, self)
             if self._is_repeated:
-                self.context.used_types.add([ "mad", "codegen", "ListProperty" ], self)
-                self._type_str = "mad::codegen::ListProperty<{}>".format(base_type_str)
+                self.context.used_types.add([ "mad", "codegen", "CompositesListProperty" ], self)
+                self._type_str = "mad::codegen::CompositesListProperty<{}>".format(base_type_str)
             else:
-                self.context.used_types.add([ "mad", "codegen", "Property" ], self)
-                self._type_str = "mad::codegen::Property<{}>".format(base_type_str)
+                self.context.used_types.add([ "mad", "codegen", "CompositeProperty" ], self)
+                self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
         #endif
         self._default_value = "" if not self._type_is_fundamental else "false" if self._type_str == "bool" else "0"
     #enddef
@@ -857,13 +895,20 @@ class ClassMemberPrinterAsProperty(NodePrinter):
         finished_flag = PRINTER_FINISHED
 
         def generate_class_decl():
-            if self.context.current_phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
+            if self.context.in_phase(PHASE_CLASS_MEMBER_PUBLIC_VARIABLE):
                 # TODO Initialization (default value).
                 self.writeln("  {} {};".format(self._type_str, self.node.attributes.get("name", "")))
         #enddef
 
+        def generate_class_impl():
+            if self.context.in_phase(PHASE_CLASS_MEMBER_INIT):
+                self.write('{0}(*this, "{0}")'.format(self.node.attributes.get("name", "")))
+        #enddef
+
         if self.context.in_phase(PHASE_CLASS_DECL):
             generate_class_decl()
+        elif self.context.in_phase(PHASE_CLASS_IMPL):
+            generate_class_impl()
 
         return finished_flag
     #enddef
