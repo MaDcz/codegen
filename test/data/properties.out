@@ -1,0 +1,45 @@
+#include <mad/codegen/compositeproperty.hpp>
+#include <mad/codegen/compositeslistproperty.hpp>
+#include <mad/codegen/tree/compositenode.hpp>
+#include <mad/codegen/valueproperty.hpp>
+#include <mad/codegen/valueslistproperty.hpp>
+class Type1 : public mad::codegen::tree::CompositeNode
+{
+public:
+  Type1();
+  virtual ~Type1();
+public:
+  mad::codegen::ValueProperty<bool> bool_field;
+  mad::codegen::ValuesListProperty<bool> bool_list_field;
+  mad::codegen::ValueProperty<int> int_field;
+  mad::codegen::ValuesListProperty<int> int_list_field;
+  mad::codegen::ValueProperty<unsigned int> uint_field;
+  mad::codegen::ValuesListProperty<unsigned int> uint_list_field;
+};
+class Type2 : public mad::codegen::tree::CompositeNode
+{
+public:
+  Type2();
+  virtual ~Type2();
+public:
+  mad::codegen::CompositeProperty<Type1> type1_field;
+  mad::codegen::CompositesListProperty<Type1> type1_list_field;
+};
+Type1::Type1()
+  : bool_field(*this, "bool_field"),
+    bool_list_field(*this, "bool_list_field"),
+    int_field(*this, "int_field"),
+    int_list_field(*this, "int_list_field"),
+    uint_field(*this, "uint_field"),
+    uint_list_field(*this, "uint_list_field"){
+}
+Type1::~Type1()
+{
+}
+Type2::Type2()
+  : type1_field(*this, "type1_field"),
+    type1_list_field(*this, "type1_list_field"){
+}
+Type2::~Type2()
+{
+}

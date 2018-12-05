@@ -132,6 +132,7 @@ cpp_fundamental_types = {
     "signed int" : "int",
     "unsigned" : "unsigned int",
     "unsigned int" : "unsigned int",
+    "uint" : "unsigned int", # '.iface' format specific
     "long" : "long int",
     "long int" : "long int",
     "signed long" : "long int",
@@ -155,6 +156,9 @@ cpp_types = {
     },
     "mad::codegen::CompositesListProperty" : {
         "include" : "<mad/codegen/compositeslistproperty.hpp>"
+    },
+    "mad::codegen::tree::CompositeNode" : {
+        "include" : "<mad/codegen/tree/compositenode.hpp>"
     },
     "mad::codegen::ValueProperty" : {
         "include" : "<mad/codegen/valueproperty.hpp>"
@@ -204,6 +208,7 @@ class IncludeTypesRegister(object):
     #enddef
 
     def add(self, t, p=None):
+        print("DBG IncludeTypesRegister.add() type='{}' printer='{}'".format(t, p), file=sys.stderr)
         self._register.append({ "type": t, "printer": p })
     #enddef
 
@@ -218,8 +223,10 @@ class IncludeTypesRegister(object):
             context_ns = []
             printer = entry["printer"]
             while printer is not None:
-                if isinstance(printer, NamespacePrinter) or \
-                        isinstance(printer, ClassPrinter):
+                        # TODO Do some hierarchy for the class printers.
+                if isinstance(printer, NamespacePrinter) \
+                        or isinstance(printer, ClassPrinterAsComposite) \
+                        or isinstance(printer, ClassPrinter):
                     name = printer.node.attributes.get("name", "")
                     if name:
                         context_ns.insert(0, name)
@@ -536,16 +543,23 @@ class IncludesPrinter(Printer):
     def _generate_header_includes(self):
         self.context.used_types.debug()
         used_types = self.context.used_types.resolve()
+        includes = set()
         for used_type in used_types:
             assert used_type in cpp_types
             include = cpp_types[used_type].get("include", "")
             if include:
-                self.write("#include ")
-                self.writeln(include)
+                includes.add(include)
+
+        for include in sorted(includes):
+            assert include
+            self.write("#include ")
+            self.writeln(include)
     #enddef
 
     def _generate_source_includes(self):
-        self.writeln("#include \"" + self.context.options.header_output_filename() + "\"")
+        header_output_filename = self.context.options.header_output_filename()
+        if header_output_filename:
+            self.writeln('#include "' +  + '"')
     #enddef
 
 #endclass
@@ -580,6 +594,285 @@ class NamespacePrinter(NodePrinter):
             self.context.end_namespace(self.node)
 
         return finished_flag
+    #enddef
+
+#endclass
+
+class ClassPrinterAsComposite(NodePrinter):
+
+    # XXX
+    # Basic functionality: declare class, write content, end class.
+    # Posibility ty forward declare the class and then implement it in .cpp file.
+
+    # The visitor must got through the content multiple times. For example
+    # attribute (const getter, non-const getter or optional setter,
+    # and associated member) needs to genereate parts according to what
+    # part we are generating.
+    # XXX
+
+    def __init__(self, context, node):
+        super(ClassPrinterAsComposite, self).__init__(context, node)
+    #enddef
+
+    def set_parent(self, printer):
+        super(ClassPrinterAsComposite, self).set_parent(printer)
+
+        # Add the base to the used types so an include will be generated.
+        self.context.used_types.add([ "mad", "codegen", "tree", "CompositeNode" ], self)
+
+        # Register the printer between known types.
+        full_name = []
+        printer = self
+        while printer is not None:
+            if isinstance(printer, NamespacePrinter) or \
+                    isinstance(printer, ClassPrinterAsComposite):
+                name = printer.node.attributes.get("name", "")
+                if name:
+                    full_name.insert(0, name)
+            printer = printer.parent
+        #endwhile
+
+        full_name_str = "::".join(full_name)
+        if full_name_str not in cpp_types:
+            cpp_types[full_name_str] = {}
+            print("DBG Registered '{}' between known types.".format(full_name_str), file=sys.stderr)
+        else:
+            raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
+    #enddef
+
+    def generate(self):
+
+        SECTION_NONE = 0
+        SECTION_PUBLIC = 1
+        SECTION_PROTECTED = 2
+        SECTION_PRIVATE = 3
+
+        class data:
+            finished_flag = PRINTER_FINISHED
+            section = SECTION_NONE
+
+            class node_attrs:
+                name = self.node.attributes.get("name", "")
+                is_struct = self.node.attributes.get("is_struct", False)
+
+                class cpp:
+                    pimpl = self.node.attributes.get("cpp", {}).get("pimpl", False)
+                #endclass
+            #endclass
+        #endclass
+
+        if not data.node_attrs.name:
+            raise RuntimeError("Missing or empty 'name' attribute of a 'class' node")
+
+        for printer in self.printers:
+            data.node_attrs.cpp.pimpl |= printer.node.attributes.get("cpp", {}).get("pimpl", False)
+
+        def switch_section(section):
+            tempting_section = nullcontext()
+
+            if data.section == section:
+                pass
+            elif section == SECTION_NONE:
+                data.section = SECTION_NONE
+            elif section in [SECTION_PUBLIC, SECTION_PROTECTED, SECTION_PRIVATE]:
+                # Note that the section variable has to be updated only after the write actually
+                # happens, otherwise it would be misleading.
+                def set_section():
+                    data.seciton = section
+                #enddef
+
+                if section == SECTION_PUBLIC:
+                    print("DBG Switching section to public.", file=sys.stderr)
+                    tempting_section = self.writeln("public:",
+                            mode=Printer.WRITE_MODE_TEMPTING,
+                            after_write=set_section)
+                elif section == SECTION_PROTECTED:
+                    print("DBG Switching section to protected.", file=sys.stderr)
+                    tempting_section = self.writeln("protected:",
+                            mode=Printer.WRITE_MODE_TEMPTING,
+                            after_write=set_section)
+                elif section == SECTION_PRIVATE:
+                    print("DBG Switching section to private.", file=sys.stderr)
+                    tempting_section = self.writeln("private:",
+                            mode=Printer.WRITE_MODE_TEMPTING,
+                            after_write=set_section)
+            else:
+                raise Exception("Invalid section ({}), need one of SECTION_NONE, SECTION_PUBLIC, SECTION_PROTECTED or SECTION_PRIVATE.".format(section))
+
+            return tempting_section
+        #enddef
+
+        def generate_content(phases):
+            for phase in phases:
+                self.context.begin_phase(phase)
+
+                tempting_section = nullcontext()
+
+                if self.context.in_phase(PHASE_CLASS_DECL) or self.context.in_phase(PHASE_CLASS_PIMPL_DECL):
+                    if phase == PHASE_CLASS_MEMBER_PUBLIC_VARIABLE:
+                        tempting_section = switch_section(SECTION_PUBLIC)
+                    elif phase == PHASE_CLASS_MEMBER_PROTECTED_VARIABLE:
+                        tempting_section = switch_section(SECTION_PROTECTED)
+                    elif phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
+                        tempting_section = switch_section(SECTION_PRIVATE)
+                #endif
+
+                with tempting_section:
+                    for printer in self.printers:
+                            # FIXME This isn't sufficient, members will indicate that they didn't
+                            # finished in the very beginning and it will be carried over through
+                            # the whole process in the return value.
+                            data.finished_flag &= printer.generate()
+                #endwith
+
+                self.context.end_phase(phase)
+        #enddef
+
+        # TODO Structs isn't supported properly, generated as classes at the moment.
+
+        if self.context.in_phase(PHASE_HEADER_GEN):
+
+            # Start class/struct.
+            self.context.begin_phase(PHASE_CLASS_DECL)
+            self.writeln("class {} : public mad::codegen::tree::CompositeNode".format(data.node_attrs.name))
+            self.writeln("{")
+
+            # Constructor & destructor.
+            with switch_section(SECTION_PUBLIC):
+                self.writeln("  {}();".format(data.node_attrs.name))
+                self.writeln("  virtual ~{}();".format(data.node_attrs.name))
+
+            # Generate methods.
+            generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                               PHASE_CLASS_MEMBER_CONST_GETTER,
+                               PHASE_CLASS_MEMBER_SETTER ])
+
+            # Put member variables in a seperate public/protected/private sections.
+            with switch_section(SECTION_NONE):
+                pass
+
+            # Generate member variables.
+            generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
+                               PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
+                               PHASE_CLASS_MEMBER_PRIVATE_VARIABLE ])
+
+            # Add private implementation member if needed.
+            if data.node_attrs.cpp.pimpl:
+                with switch_section(SECTION_PRIVATE):
+                    self.writeln("  class Impl;")
+                    self.writeln("  Impl* m_impl = nullptr;")
+
+            self.writeln("};")
+            self.context.end_phase(PHASE_CLASS_DECL)
+            data.finished_flag = PRINTER_NOT_FINISHED
+
+            full_name = []
+            ns_or_class_cond = \
+                    lambda p: isinstance(p, NamespacePrinter) or isinstance(p, ClassPrinterAsComposite)
+            ns_or_class = self
+            while ns_or_class:
+                name = ns_or_class.node.attributes.get("name", "")
+                assert name
+                full_name.insert(0, name)
+                ns_or_class = ns_or_class.find_parent(ns_or_class_cond)
+            self.context.index["::".join(full_name)] = self.context.options.header_output_filepath()
+        #endif
+
+        # Reset section before source generation starts.
+        with switch_section(SECTION_NONE):
+            pass
+
+        if self.context.in_phase(PHASE_SOURCE_GEN):
+            if data.node_attrs.cpp.pimpl:
+                # Declare pimpl class.
+                self.context.begin_phase(PHASE_CLASS_PIMPL_DECL)
+                self.writeln("class ", data.node_attrs.name, "::Impl")
+                self.writeln("{")
+
+                generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                                   PHASE_CLASS_MEMBER_CONST_GETTER,
+                                   PHASE_CLASS_MEMBER_SETTER ])
+
+                with switch_section(SECTION_NONE):
+                    pass
+
+                generate_content([ PHASE_CLASS_MEMBER_PUBLIC_VARIABLE,
+                                   PHASE_CLASS_MEMBER_PROTECTED_VARIABLE,
+                                   PHASE_CLASS_MEMBER_PRIVATE_VARIABLE ])
+
+                self.writeln("};")
+                self.context.end_phase(PHASE_CLASS_PIMPL_DECL)
+
+                # Implement pimpl class methods.
+                self.context.begin_phase(PHASE_CLASS_PIMPL_IMPL)
+
+                generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                                   PHASE_CLASS_MEMBER_CONST_GETTER,
+                                   PHASE_CLASS_MEMBER_SETTER ])
+
+                self.context.end_phase(PHASE_CLASS_PIMPL_IMPL)
+            #endif
+
+            self.context.begin_phase(PHASE_CLASS_IMPL)
+
+            # Constructor & destructor.
+            if data.node_attrs.cpp.pimpl:
+                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write("  : ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                    with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                        self.writeln("m_impl(new Impl)")
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                self.writeln("{")
+                self.writeln("}")
+                self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("  delete m_impl;")
+                self.writeln("  m_impl = nullptr;")
+                self.writeln("}")
+            else:
+                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write("  : ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                self.writeln("{")
+                self.writeln("}")
+                self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("}")
+            #endif
+
+            generate_content([ PHASE_CLASS_MEMBER_GETTER,
+                               PHASE_CLASS_MEMBER_CONST_GETTER,
+                               PHASE_CLASS_MEMBER_SETTER ])
+
+            self.context.end_phase(PHASE_CLASS_IMPL)
+
+        return data.finished_flag
     #enddef
 
 #endclass
@@ -722,8 +1015,7 @@ class ClassPrinter(NodePrinter):
 
             # Constructor & destructor.
             with switch_section(SECTION_PUBLIC):
-                if data.node_attrs.cpp.pimpl:
-                    self.writeln("  {}();".format(data.node_attrs.name))
+                self.writeln("  {}();".format(data.node_attrs.name))
                 self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
             # Generate methods.
@@ -871,8 +1163,7 @@ class ClassMemberPrinterAsProperty(NodePrinter):
         self._is_repeated = node.attributes.get("is_repeated", False)
         base_type_is_fundamental = isinstance(self._base_type, str) # TODO Test the string properly for Python 2 and 3
         base_type_str = self._base_type if base_type_is_fundamental else "::".join(self._base_type)
-        self._type_is_fundamental = not self._is_repeated and base_type_is_fundamental
-        if self._type_is_fundamental:
+        if base_type_is_fundamental:
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "ValuesListProperty" ], self)
                 self._type_str = "mad::codegen::ValuesListProperty<{}>".format(base_type_str)
@@ -888,7 +1179,11 @@ class ClassMemberPrinterAsProperty(NodePrinter):
                 self.context.used_types.add([ "mad", "codegen", "CompositeProperty" ], self)
                 self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
         #endif
-        self._default_value = "" if not self._type_is_fundamental else "false" if self._type_str == "bool" else "0"
+
+        print("DBG Class member '{}'. (type='{}' base_type='{}' base_type_is_fundamental={} is_repeated={})"
+                .format(self.node.attributes.get("name", ""), self._type_str, base_type_str,
+                        base_type_is_fundamental, self._is_repeated),
+                file=sys.stderr)
     #enddef
 
     def generate(self):
@@ -1196,8 +1491,10 @@ class Generator(codemodel.ClassDiagramVisitor):
             return root_printer
         #enddef
 
-        if node.attributes.get("name", ""): # TODO Distinguish somehow the package node in the parser.
-            with self._create_node_scope(create_root_printer):
+        with self._create_node_scope(create_root_printer):
+            # Package doesn't have to have name, it can only serve the purpose of encapsulating
+            # a bunch of nodes into a logical unit (as in the case of a top-level packages).
+            if node.attributes.get("name", ""):
                 top_printer = self._top_printer()
                 assert top_printer
 
@@ -1207,8 +1504,8 @@ class Generator(codemodel.ClassDiagramVisitor):
                 self._printers_stack.append(printer)
                 super(Generator, self).visit_package(node)
                 self._printers_stack.pop()
-        else:
-            super(Generator, self).visit_package(node)
+            else:
+                super(Generator, self).visit_package(node)
     #enddef
 
     def visit_class(self, node):
@@ -1216,7 +1513,7 @@ class Generator(codemodel.ClassDiagramVisitor):
             top_printer = self._top_printer()
             assert top_printer
 
-            printer = ClassPrinter(self._context, node)
+            printer = ClassPrinterAsComposite(self._context, node)
             top_printer.add_printer(printer)
 
             self._printers_stack.append(printer)
