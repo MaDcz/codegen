@@ -1,7 +1,10 @@
-import sys, copy
-from contextlib import contextmanager
-
+import codegen.index
 import codemodel
+
+from contextlib import contextmanager
+import copy
+import logging
+import sys
 
 # This is a workaround for 'nullcontext' missing in the 'contextlib' module. It was introduced
 # only in Python version 3.7.
@@ -12,25 +15,6 @@ def nullcontext():
 
 class Output(object):
     pass
-#enddef
-
-def load_index_from_file(fpath):
-    ret = {}
-
-    with open(fpath, "r") as f:
-        for ln in f:
-            key_value = ln.rstrip().split(" ", maxsplit=1)
-            if len(key_value) != 2:
-                continue
-            ret[key_value[0]] = key_value[1]
-
-    return ret
-#enddef
-
-def save_index_to_file(index, fpath):
-    with open(fpath, "w") as f:
-        for key, value in index.items():
-            print(key + " " + value, file=f)
 #enddef
 
 class Options(object):
@@ -58,6 +42,7 @@ class Options(object):
     def header_output_file(self):
         if self._header_output_file is None:
             filepath = self.header_output_filepath()
+            logging.debug("Opening header output file '{}'.".format(filepath))
             self._header_output_file = \
                 open(filepath, "w") if filepath else sys.stdout
 
@@ -81,6 +66,7 @@ class Options(object):
     def source_output_file(self):
         if self._source_output_file is None:
             filepath = self.source_output_filepath()
+            logging.debug("Opening source output file '{}'.".format(filepath))
             self._source_output_file = \
                 open(filepath, "w") if filepath else sys.stdout
 
@@ -208,7 +194,7 @@ class IncludeTypesRegister(object):
     #enddef
 
     def add(self, t, p=None):
-        print("DBG IncludeTypesRegister.add() type='{}' printer='{}'".format(t, p), file=sys.stderr)
+        logging.debug("IncludeTypesRegister.add() type='{}' printer='{}'".format(t, p))
         self._register.append({ "type": t, "printer": p })
     #enddef
 
@@ -245,7 +231,7 @@ class IncludeTypesRegister(object):
             if not full_type_str:
                 raise RuntimeError("Cannot resolve '{}' type in '{}' namespace.".format(type_str, "::".join(context_ns)))
 
-            print("DBG Resolved '{}' type in '{}' namespace to '{}'.".format(type_str, "::".join(context_ns), full_type_str), file=sys.stderr)
+            logging.debug("Resolved '{}' type in '{}' namespace to '{}'.".format(type_str, "::".join(context_ns), full_type_str))
             ret.add(full_type_str)
         #endfor
 
@@ -254,10 +240,10 @@ class IncludeTypesRegister(object):
 
     def debug(self):
         if self._register:
-            print("DBG >>>>>>>>>> Include types register content", file=sys.stderr)
+            logging.debug(">>>>>>>>>> Include types register content")
             for entry in self._register:
-                print("DBG type: {} printer: {}".format(entry["type"], str(entry["printer"])), file=sys.stderr)
-            print("DBG <<<<<<<<<<", file=sys.stderr)
+                logging.debug("type: {} printer: {}".format(entry["type"], str(entry["printer"])))
+            logging.debug("<<<<<<<<<<")
     #enddef
 
 #endclass
@@ -265,27 +251,52 @@ class IncludeTypesRegister(object):
 class Context(object):
 
     def __init__(self, options):
-        self._options = options
-        self._out = None
+        self.__options = options
+        self.__out = None
         self._printers_data = {}
         self.__phases_stack = []
         self.__namespaces_stack = []
-        self._used_types = IncludeTypesRegister()
+        self.__used_types = IncludeTypesRegister()
         self.__index = None
+        self.__index_lock = None
         self.__tempting_writes_buffer = []
+    #enddef
 
-        self._load_index()
+    def __enter__(self):
+        self.__prepare_index()
+
+        return self
+    #enddef
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        # Persist changes in the index.
+        self.__save_index()
+
+        # Unlock the index.
+        if self.__index_lock is not None:
+            self.__index_lock.__exit__(exc_type, exc_value, traceback)
+            self.__index_lock = None
+
+        self.__index == None
+
+        # This is needed to flush printed code into the files, without it the files ends up being empty.
+        # TODO Do it in some better way, best via 'with' statement.
+        self.__options.header_output_file().close()
+        self.__options.source_output_file().close()
+        self.__out = None
+
+        # TODO Errors handling etc.
     #enddef
 
     @property
     def options(self):
-        return self._options
+        return self.__options
     #enddef
 
     @property
     def out(self):
-        assert self._out is not None
-        return self._out
+        assert self.__out is not None
+        return self.__out
     #enddef
 
     @property
@@ -294,16 +305,16 @@ class Context(object):
     #enddef
 
     def begin_phase(self, phase):
-        print("DBG >>>>>>>>>> Phase {}".format(phase), file=sys.stderr)
+        logging.debug(">>>>>>>>>> Phase {}.".format(phase))
         self.__phases_stack.append(phase)
         if phase == PHASE_HEADER_GEN:
-            self._out = self._options.header_output_file()
+            self.__out = self.__options.header_output_file()
         elif phase == PHASE_SOURCE_GEN:
-            self._out = self._options.source_output_file()
+            self.__out = self.__options.source_output_file()
     #enddef
 
     def end_phase(self, phase):
-        print("DBG <<<<<<<<<< Phase {}".format(phase), file=sys.stderr)
+        logging.debug("<<<<<<<<<< Phase {}.".format(phase))
         assert self.__phases_stack
         assert self.__phases_stack[-1] == phase
         self.__phases_stack.pop()
@@ -335,33 +346,37 @@ class Context(object):
 
     @property
     def used_types(self):
-        return self._used_types
+        return self.__used_types
     #enddef
 
-    def _load_index(self):
+    def __prepare_index(self):
         assert self.__index is None
 
         # Try to load index file if specified through an option.
-        if self._options.args.index: # TODO Don't use args in options.
+        if self.__options.args.index: # TODO Don't use args in options.
             try:
-                self.__index = load_index_from_file(self._options.args.index)
+                index_file = codegen.index.IndexFile(self.__options.args.index)
+                self.__index_lock = index_file.lock()
+                self.__index_lock.__enter__()
+                self.__index = index_file.load()
             except FileNotFoundError:
                 pass
 
         # Start with empty index if we don't have an index file.
         if self.__index is None:
-            self.__index = {}
+            self.__index = codegen.index.Index()
 
         # Debug.
         if self.__index:
-            print("DBG >>>>>>>>>> Index file '{}' content".format(self._options.args.index), file=sys.stderr)
+            logging.debug(">>>>>>>>>> Index file '{}' content".format(self.__options.args.index))
             for key, value in self.__index.items():
-                print("Found '{}' in index file '{}'".format(key, value), file=sys.stderr)
-                if key not in cpp_types:
-                    cpp_types[key] = { "include": '"' + value + '"' }
+                logging.debug("Found '{}' in index file '{}'".format(key, value))
+                cpp_key = "::".join(key.split(".")) # TODO Do it in a better way after fixing the index iteration. cpp_types maybe can use tuples too after the fix.
+                if cpp_key not in cpp_types:
+                    cpp_types[cpp_key] = {"include": '"' + value["cpp"]["include"] + '"'} # TODO Careful with the access here.
                 else:
                     assert key not in cpp_types
-            print("DBG <<<<<<<<<<", file=sys.stderr)
+            logging.debug("<<<<<<<<<<")
         #endif
     #enddef
 
@@ -371,16 +386,16 @@ class Context(object):
         return self.__index
     #enddef
 
-    def save_index(self):
+    def __save_index(self):
         # TODO Work with index more nicely. Save it only if there are some changes.
-        # TODO Locking while writing.
-        if self.__index is not None and self._options.args.index:
-            save_index_to_file(self.__index, self._options.args.index)
+        if self.__index is not None and self.__options.args.index:
+            index_file = codegen.index.IndexFile(self.__options.args.index)
+            index_file.save(self.__index)
     #enddef
 
     @contextmanager
     def tempting_writes_buffer_append(self, write):
-        print("DBG Appending tempting write {}.".format(len(self.__tempting_writes_buffer)), file=sys.stderr)
+        logging.debug("Appending tempting write {}.".format(len(self.__tempting_writes_buffer)))
         clear = bool(not self.__tempting_writes_buffer)
         self.__tempting_writes_buffer.append(write)
         yield
@@ -389,7 +404,7 @@ class Context(object):
     #enddef
 
     def flush_tempting_writes(self):
-        print("DBG Flushing {} tempting writes.".format(len(self.__tempting_writes_buffer)), file=sys.stderr)
+        logging.debug("Flushing {} tempting writes.".format(len(self.__tempting_writes_buffer)))
         tempting_writes_buffer = self.__tempting_writes_buffer
         self.__tempting_writes_buffer = []
         for write in tempting_writes_buffer:
@@ -409,10 +424,12 @@ class Printer(object):
     WRITE_MODE_DEFAULT = 0
     WRITE_MODE_TEMPTING = WRITE_MODE_DEFAULT | WRITE_FLAG_TEMPTING
 
-    def __init__(self, context):
+    def __init__(self, context, parent_printer):
         self.__context = context
         self.__printers = []
-        self.__parent = None
+        if parent_printer is not None:
+            parent_printer.add_printer(self)
+        self.__parent = parent_printer
 
         assert(self.__context)
     #enddef
@@ -430,12 +447,6 @@ class Printer(object):
 
     def add_printer(self, printer):
         self.__printers.append(printer)
-        printer.set_parent(self)
-    #enddef
-
-    def set_parent(self, printer):
-        assert self.__parent is None
-        self.__parent = printer
     #enddef
 
     @property
@@ -479,11 +490,11 @@ class Printer(object):
 
     def writeln(self, *args, mode=WRITE_MODE_DEFAULT, after_write=None):
         def write_args():
-            # TODO If debug requested.
-            debug_line = ""
-            for arg in args:
-                debug_line += str(arg)
-            print("DBG writeln('{}'). (tempting={})".format(debug_line, mode & Printer.WRITE_FLAG_TEMPTING), file=sys.stderr)
+            if logging.getLogger().level <= logging.DEBUG:
+                debug_line = ""
+                for arg in args:
+                    debug_line += str(arg)
+                logging.debug("writeln('{}'). (tempting={})".format(debug_line, mode & Printer.WRITE_FLAG_TEMPTING))
 
             self.write(*args)
             print(file=self.__context.out)
@@ -499,15 +510,56 @@ class Printer(object):
             write_args()
     #enddef
 
+    def resolve_type(self, type_str_or_parts):
+        """Resolves the provided type in the scope of this printer."""
+
+        type_parts = type_str_or_parts
+        if isinstance(type_parts, str):
+            # TODO Dissect the string by "." or "::" or whatever. Add support for absolute types starting with "::".
+            type_parts = [type_str_or_parts]
+    
+        type_str = "::".join(type_parts)
+
+        # Get the namespace in which the type was introduced.
+        context_ns = []
+        printer = self
+        while printer is not None:
+            # TODO It would be safer to have deterministically specified if a printer introduces a namespace.
+            if isinstance(printer, NamespacePrinter) \
+                    or isinstance(printer, ClassPrinterAsComposite) \
+                    or isinstance(printer, ClassPrinter):
+                name = printer.node.attributes.get("name", "")
+                if name:
+                    context_ns.insert(0, name)
+            printer = printer.parent
+        #endwhile
+    
+        logging.debug("Resolving '{}' in namespace '{}'.".format(type_str, "::".join(context_ns)))
+
+        full_type_parts = []
+        for i in reversed(range(len(context_ns) + 1)):
+            tmp = context_ns[0:i] + [type_str]
+            tmp_str = "::".join(tmp)
+            logging.debug("Resolving '{}', trying if '{}' is a known type.".format(type_str, tmp_str))
+            if tmp_str in cpp_types:
+                full_type_parts = tmp
+                break
+        #endfor
+    
+        if not full_type_parts:
+            raise RuntimeError("Cannot resolve '{}' type in '{}' namespace.".format(type_str, "::".join(context_ns)))
+
+        return tuple(full_type_parts)
+    #enddef
+
 #endclass
 
 class NodePrinter(Printer):
 
-    def __init__(self, context, node):
-        super(NodePrinter, self).__init__(context)
+    def __init__(self, node, context, parent_printer):
+        super(NodePrinter, self).__init__(context, parent_printer)
 
         self.__node = node
-
         assert(self.__node)
     #enddef
 
@@ -528,8 +580,8 @@ class NodePrinter(Printer):
 
 class IncludesPrinter(Printer):
 
-    def __init__(self, context):
-        super(IncludesPrinter, self).__init__(context)
+    def __init__(self, context, parent_printer):
+        super(IncludesPrinter, self).__init__(context, parent_printer)
     #enddef
 
     def generate(self):
@@ -559,7 +611,7 @@ class IncludesPrinter(Printer):
     def _generate_source_includes(self):
         header_output_filename = self.context.options.header_output_filename()
         if header_output_filename:
-            self.writeln('#include "' +  + '"')
+            self.writeln('#include "' + self.context.options.header_output_filename()  + '"')
     #enddef
 
 #endclass
@@ -572,8 +624,8 @@ class NamespacePrinter(NodePrinter):
     # needs to be closed.
     # XXX
 
-    def __init__(self, context, node):
-        super(NamespacePrinter, self).__init__(context, node)
+    def __init__(self, node, context, parent_printer):
+        super(NamespacePrinter, self).__init__(node, context, parent_printer)
     #enddef
 
     def generate(self):
@@ -610,22 +662,19 @@ class ClassPrinterAsComposite(NodePrinter):
     # part we are generating.
     # XXX
 
-    def __init__(self, context, node):
-        super(ClassPrinterAsComposite, self).__init__(context, node)
-    #enddef
-
-    def set_parent(self, printer):
-        super(ClassPrinterAsComposite, self).set_parent(printer)
+    def __init__(self, node, context, parent_printer):
+        super(ClassPrinterAsComposite, self).__init__(node, context, parent_printer)
 
         # Add the base to the used types so an include will be generated.
-        self.context.used_types.add([ "mad", "codegen", "tree", "CompositeNode" ], self)
+        self.context.used_types.add(["mad", "codegen", "tree", "CompositeNode"], self)
 
         # Register the printer between known types.
         full_name = []
         printer = self
         while printer is not None:
-            if isinstance(printer, NamespacePrinter) or \
-                    isinstance(printer, ClassPrinterAsComposite):
+            if isinstance(printer, NamespacePrinter) \
+                    or isinstance(printer, ClassPrinterAsComposite) \
+                    or isinstance(printer, ClassPrinter):
                 name = printer.node.attributes.get("name", "")
                 if name:
                     full_name.insert(0, name)
@@ -635,7 +684,7 @@ class ClassPrinterAsComposite(NodePrinter):
         full_name_str = "::".join(full_name)
         if full_name_str not in cpp_types:
             cpp_types[full_name_str] = {}
-            print("DBG Registered '{}' between known types.".format(full_name_str), file=sys.stderr)
+            logging.debug("Registered '{}' between known types.".format(full_name_str))
         else:
             raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
     #enddef
@@ -682,17 +731,17 @@ class ClassPrinterAsComposite(NodePrinter):
                 #enddef
 
                 if section == SECTION_PUBLIC:
-                    print("DBG Switching section to public.", file=sys.stderr)
+                    logging.debug("Switching section to public.")
                     tempting_section = self.writeln("public:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PROTECTED:
-                    print("DBG Switching section to protected.", file=sys.stderr)
+                    logging.debug("Switching section to protected.")
                     tempting_section = self.writeln("protected:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PRIVATE:
-                    print("DBG Switching section to private.", file=sys.stderr)
+                    logging.debug("Switching section to private.")
                     tempting_section = self.writeln("private:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
@@ -775,7 +824,8 @@ class ClassPrinterAsComposite(NodePrinter):
                 assert name
                 full_name.insert(0, name)
                 ns_or_class = ns_or_class.find_parent(ns_or_class_cond)
-            self.context.index["::".join(full_name)] = self.context.options.header_output_filepath()
+            # FIXME Is the following okay? Also ns_or_class_cond is wrong.
+            self.context.index[tuple(full_name)] = {"cpp": {"include": self.context.options.header_output_filepath()}}
         #endif
 
         # Reset section before source generation starts.
@@ -889,19 +939,16 @@ class ClassPrinter(NodePrinter):
     # part we are generating.
     # XXX
 
-    def __init__(self, context, node):
-        super(ClassPrinter, self).__init__(context, node)
-    #enddef
-
-    def set_parent(self, printer):
-        super(ClassPrinter, self).set_parent(printer)
+    def __init__(self, node, context, parent_printer):
+        super(ClassPrinter, self).__init__(node, context, parent_printer)
 
         # Register the printer between known types.
         full_name = []
         printer = self
         while printer is not None:
-            if isinstance(printer, NamespacePrinter) or \
-                    isinstance(printer, ClassPrinter):
+            if isinstance(printer, NamespacePrinter) \
+                    or isinstance(printer, ClassPrinterAsComposite) \
+                    or isinstance(printer, ClassPrinter):
                 name = printer.node.attributes.get("name", "")
                 if name:
                     full_name.insert(0, name)
@@ -911,7 +958,7 @@ class ClassPrinter(NodePrinter):
         full_name_str = "::".join(full_name)
         if full_name_str not in cpp_types:
             cpp_types[full_name_str] = {}
-            print("DBG Registered '{}' between known types.".format(full_name_str), file=sys.stderr)
+            logging.debug("Registered '{}' between known types.".format(full_name_str))
         else:
             raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
     #enddef
@@ -958,17 +1005,17 @@ class ClassPrinter(NodePrinter):
                 #enddef
 
                 if section == SECTION_PUBLIC:
-                    print("DBG Switching section to public.", file=sys.stderr)
+                    logging.debug("Switching section to public.")
                     tempting_section = self.writeln("public:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PROTECTED:
-                    print("DBG Switching section to protected.", file=sys.stderr)
+                    logging.debug("Switching section to protected.")
                     tempting_section = self.writeln("protected:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
                 elif section == SECTION_PRIVATE:
-                    print("DBG Switching section to private.", file=sys.stderr)
+                    logging.debug("Switching section to private.")
                     tempting_section = self.writeln("private:",
                             mode=Printer.WRITE_MODE_TEMPTING,
                             after_write=set_section)
@@ -1051,6 +1098,7 @@ class ClassPrinter(NodePrinter):
                 assert name
                 full_name.insert(0, name)
                 ns_or_class = ns_or_class.find_parent(ns_or_class_cond)
+            # FIXME Is the following okay? Also ns_or_class_cond is wrong.
             self.context.index["::".join(full_name)] = self.context.options.header_output_filepath()
         #endif
 
@@ -1153,17 +1201,41 @@ class ClassPrinter(NodePrinter):
 
 #endclass
 
-# TODO Modify this to fit its name and use it instead of the former implementation.
-class ClassMemberPrinterAsProperty(NodePrinter):
+TREATMENT_VALUE_TYPE = "value_type"
+TREATMENT_REFERENCE_TYPE = "reference_type"
 
-    def __init__(self, context, node):
-        super(ClassMemberPrinterAsProperty, self).__init__(context, node)
+class ClassMemberPrinter(NodePrinter):
+
+    def __init__(self, node, context, parent_printer):
+        super(ClassMemberPrinter, self).__init__(node, context, parent_printer)
 
         self._base_type = refine_cpp_type(node.attributes.get("type", []))
+        self._base_type_is_fundamental = isinstance(self._base_type, str)
+        self._full_type = self._base_type if self._base_type_is_fundamental else self.resolve_type(self._base_type)
+        def determine_type_treatment():
+            if self._base_type_is_fundamental:
+                return TREATMENT_VALUE_TYPE
+            else:
+                full_type_str = "::".join(self._full_type)
+                assert full_type_str in cpp_types
+                return cpp_types[full_type_str].get("treatment", TREATMENT_REFERENCE_TYPE)
+        #enddef
+        self._type_treatment = determine_type_treatment()
         self._is_repeated = node.attributes.get("is_repeated", False)
-        base_type_is_fundamental = isinstance(self._base_type, str) # TODO Test the string properly for Python 2 and 3
-        base_type_str = self._base_type if base_type_is_fundamental else "::".join(self._base_type)
-        if base_type_is_fundamental:
+    #enddef
+
+#endclass
+
+class ClassMemberPrinter_Property(ClassMemberPrinter):
+
+    def __init__(self, node, context, parent_printer):
+        super(ClassMemberPrinter_Property, self).__init__(node, context, parent_printer)
+
+        if not self._base_type_is_fundamental:
+            self.context.used_types.add(self._base_type, self)
+
+        base_type_str = self._base_type if isinstance(self._base_type, str) else "::".join(self._base_type)
+        if self._type_treatment == TREATMENT_VALUE_TYPE:
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "ValuesListProperty" ], self)
                 self._type_str = "mad::codegen::ValuesListProperty<{}>".format(base_type_str)
@@ -1171,7 +1243,6 @@ class ClassMemberPrinterAsProperty(NodePrinter):
                 self.context.used_types.add([ "mad", "codegen", "ValueProperty" ], self)
                 self._type_str = "mad::codegen::ValueProperty<{}>".format(base_type_str)
         else:
-            self.context.used_types.add(self._base_type, self)
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "CompositesListProperty" ], self)
                 self._type_str = "mad::codegen::CompositesListProperty<{}>".format(base_type_str)
@@ -1180,10 +1251,9 @@ class ClassMemberPrinterAsProperty(NodePrinter):
                 self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
         #endif
 
-        print("DBG Class member '{}'. (type='{}' base_type='{}' base_type_is_fundamental={} is_repeated={})"
+        logging.debug("Class member '{}'. (type='{}' base_type='{}' treatment={} is_repeated={})"
                 .format(self.node.attributes.get("name", ""), self._type_str, base_type_str,
-                        base_type_is_fundamental, self._is_repeated),
-                file=sys.stderr)
+                        self._type_treatment, self._is_repeated))
     #enddef
 
     def generate(self):
@@ -1210,13 +1280,11 @@ class ClassMemberPrinterAsProperty(NodePrinter):
 
 #endclass
 
-class ClassMemberPrinter(NodePrinter):
+class ClassMemberPrinter_GetterSetter(ClassMemberPrinter):
 
-    def __init__(self, context, node):
-        super(ClassMemberPrinter, self).__init__(context, node)
+    def __init__(self, node, context, parent_printer):
+        super(ClassMemberPrinter_GetterSetter, self).__init__(node, context, parent_printer)
 
-        self._base_type = refine_cpp_type(node.attributes.get("type", []))
-        self._is_repeated = node.attributes.get("is_repeated", False)
         base_type_is_fundamental = isinstance(self._base_type, str) # TODO Test the string properly for Python 2 and 3
         base_type_str = self._base_type if base_type_is_fundamental else "::".join(self._base_type)
         self._type_is_fundamental = not self._is_repeated and base_type_is_fundamental
@@ -1255,7 +1323,7 @@ class ClassMemberPrinter(NodePrinter):
                             self.write(" = {}".format(self._default_value))
                         self.writeln(";")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     # TODO Use format() in a better way (arguments could be preparend in advance).
@@ -1271,7 +1339,7 @@ class ClassMemberPrinter(NodePrinter):
                         # TODO Initialization (default value).
                         self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
 
         def generate_class_impl():
@@ -1299,7 +1367,7 @@ class ClassMemberPrinter(NodePrinter):
                         self.writeln("  m_impl->{}(value);".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     # TODO Distinguish between types ('value' vs. 'reference' type).
@@ -1330,7 +1398,7 @@ class ClassMemberPrinter(NodePrinter):
                         self.writeln("  m_impl->{}(std::move(value));".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
 
         def generate_pimpl_decl():
@@ -1350,7 +1418,7 @@ class ClassMemberPrinter(NodePrinter):
                         self.write(" = {}".format(self._default_value))
                     self.writeln(";")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     self.writeln("  {}& {}();".format(self._type_str, self.node.attributes.get("name", "")))
@@ -1361,7 +1429,7 @@ class ClassMemberPrinter(NodePrinter):
                 elif self.context.current_phase == PHASE_CLASS_MEMBER_PRIVATE_VARIABLE:
                     self.writeln("  {} m_{};".format(self._type_str, self.node.attributes.get("name", "")))
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
 
         def generate_pimpl_impl():
@@ -1382,7 +1450,7 @@ class ClassMemberPrinter(NodePrinter):
                     self.writeln("  m_{} = value;".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
             else:
                 if self.context.current_phase == PHASE_CLASS_MEMBER_GETTER:
                     self.writeln("{}& {}::Impl::{}()".format(self._type_str, self.parent.node.attributes.get("name", ""), self.node.attributes.get("name", "")))
@@ -1397,7 +1465,7 @@ class ClassMemberPrinter(NodePrinter):
                     self.writeln("  m_{} = std::move(value);".format(self.node.attributes.get("name", "")))
                     self.writeln("}")
                 else:
-                    raise Exception("ClassMemberPrinter used in unsupported phase ({})".format(self.context.current_phase))
+                    raise Exception("ClassMemberPrinter_GetterSetter used in unsupported phase ({})".format(self.context.current_phase))
         #enddef
 
         if self.context.in_phase(PHASE_CLASS_DECL):
@@ -1419,7 +1487,7 @@ class Generator(codemodel.ClassDiagramVisitor):
     class RootPrinter(Printer):
 
         def __init__(self, context):
-            super(Generator.RootPrinter, self).__init__(context)
+            super(Generator.RootPrinter, self).__init__(context, None)
         #enddef
 
         def generate(self):
@@ -1438,8 +1506,6 @@ class Generator(codemodel.ClassDiagramVisitor):
                     if finished_flag == PRINTER_FINISHED:
                         break
                 #endfor
-
-                self.context.save_index()
             #endif
 
             return PRINTER_FINISHED
@@ -1447,121 +1513,105 @@ class Generator(codemodel.ClassDiagramVisitor):
 
     #endclass
 
-    class DiagramNodeGuard(object):
-
-        def __init__(self, printers_stack, root_printer_create):
-            assert printers_stack is not None
-            assert root_printer_create
-
-            self._printers_stack = printers_stack
-            self._root_printer_create = root_printer_create
-        #enddef
-
-        def __enter__(self):
-            if not self._printers_stack:
-                self._printers_stack.append(self._root_printer_create())
-        #enddef
-
-        def __exit__(self, exc_type, exc_value, traceback):
-            assert len(self._printers_stack) > 0
-        #enddef
-
-    #endclass
-
-    def __init__(self, args=None):
+    def __init__(self):
         super(Generator, self).__init__()
 
-        self._context = Context(Options(args))
-        self._printers_stack = []
+        self.__context = None
+        self.__printers_stack = []
     #enddef
 
-    def run(self, node):
-        node.accept(self)
+    def run(self, node, args=None):
+        with self.__ensure_context(args):
+            logging.info("Processing class diagram, creating printers tree...")
+            node.accept(self)
+            logging.info("Printers tree created.")
 
-        if len(self._printers_stack) == 1:
-            root_printer = self._printers_stack.pop()
+            assert len(self.__printers_stack) == 1
+            root_printer = self.__printers_stack.pop()
             assert isinstance(root_printer, Generator.RootPrinter)
+            logging.info("Generating code...")
             root_printer.generate()
+            logging.info("Code generation finished.")
     #enddef
 
     def visit_package(self, node):
-        def create_root_printer():
-            root_printer = self._create_root_printer()
-            root_printer.add_printer(IncludesPrinter(self._context))
-            return root_printer
-        #enddef
 
-        with self._create_node_scope(create_root_printer):
-            # Package doesn't have to have name, it can only serve the purpose of encapsulating
-            # a bunch of nodes into a logical unit (as in the case of a top-level packages).
-            if node.attributes.get("name", ""):
-                top_printer = self._top_printer()
-                assert top_printer
+        # Package doesn't have to have name, it can only serve the purpose of encapsulating
+        # a bunch of nodes into a logical unit (as in the case of a top-level packages).
+        if node.attributes.get("name", ""):
+            self.__ensure_root_printer()
 
-                printer = NamespacePrinter(self._context, node)
-                top_printer.add_printer(printer)
+            assert self.__top_printer()
+            printer = NamespacePrinter(node, self.__context, self.__top_printer())
 
-                self._printers_stack.append(printer)
-                super(Generator, self).visit_package(node)
-                self._printers_stack.pop()
-            else:
-                super(Generator, self).visit_package(node)
+            self.__printers_stack.append(printer)
+            super(Generator, self).visit_package(node)
+            self.__printers_stack.pop()
+        else:
+            def create_root_printer():
+                root_printer = self.__create_root_printer()
+                IncludesPrinter(self.__context, root_printer)
+                return root_printer
+            #enddef
+
+            # Get into about types used in the class diagram.
+            for cm_full_type, cm_info in node.attributes.get("using", {}).items():
+                cpp_full_type = "::".join(cm_full_type.split("."))
+                if cpp_full_type in cpp_types:
+                    cpp_info = cpp_types[cpp_full_type]
+                    if "treatment" in cm_info:
+                        cpp_info["treatment"] = cm_info["treatment"]
+            #endfor
+
+            self.__ensure_root_printer(create_root_printer)
+            super(Generator, self).visit_package(node)
     #enddef
 
     def visit_class(self, node):
-        with self._create_node_scope():
-            top_printer = self._top_printer()
-            assert top_printer
+        self.__ensure_root_printer()
 
-            printer = ClassPrinterAsComposite(self._context, node)
-            top_printer.add_printer(printer)
+        assert self.__top_printer()
+        printer = ClassPrinterAsComposite(node, self.__context, self.__top_printer())
 
-            self._printers_stack.append(printer)
-            super(Generator, self).visit_class(node)
-            self._printers_stack.pop()
+        self.__printers_stack.append(printer)
+        super(Generator, self).visit_class(node)
+        self.__printers_stack.pop()
     #enddef
-
-# TODO
-#    def visit_operation(self, node):
-#        name = node.attributes.get("name", "")
-#        return_type = node.attributes.get("return_type", "void")
-#        params = node.attributes.get("params", [])
-#        is_static = node.attributes.get("is_static", False)
-#
-#        if not name:
-#            raise RuntimeError("Missing or empty 'name' attribute of a 'operation' node")
-#
-#        self.writeln("static " if is_static else "", return_type, " ", name,
-#            "(", ", ".join(params), ");")
-#        super(Generator, self).visit_operation(node)
-#    #enddef
 
     def visit_attribute(self, node):
-        with self._create_node_scope():
-            top_printer = self._top_printer()
-            assert top_printer
+        self.__ensure_root_printer()
 
-            # FIXME This won't be always true. Parent printer probablu know what printer
-            # to instanitate.
-            printer = ClassMemberPrinterAsProperty(self._context, node)
-            top_printer.add_printer(printer)
+        assert self.__top_printer()
+        # FIXME This won't be always true. Parent printer probablu know what printer
+        # to instanitate.
+        printer = ClassMemberPrinter_Property(node, self.__context, self.__top_printer())
 
-            self._printers_stack.append(printer)
-            super(Generator, self).visit_attribute(node)
-            self._printers_stack.pop()
+        self.__printers_stack.append(printer)
+        super(Generator, self).visit_attribute(node)
+        self.__printers_stack.pop()
     #enddef
 
-    def _create_node_scope(self, root_printer_create=None):
-        return Generator.DiagramNodeGuard(self._printers_stack,
-                root_printer_create if root_printer_create is not None else self._create_root_printer)
+    @contextmanager
+    def __ensure_context(self, args):
+        with Context(Options(args)) as context:
+            self.__context = context
+            yield
+            self.__context = None
     #enddef
 
-    def _create_root_printer(self):
-        return Generator.RootPrinter(self._context)
+    def __ensure_root_printer(self, root_printer_create=None):
+        if not self.__printers_stack:
+            root_printer = root_printer_create() if root_printer_create is not None \
+                    else self.__create_root_printer()
+            self.__printers_stack.append(root_printer)
     #enddef
 
-    def _top_printer(self):
-        return self._printers_stack[-1] if self._printers_stack else None
+    def __create_root_printer(self):
+        return Generator.RootPrinter(self.__context)
+    #enddef
+
+    def __top_printer(self):
+        return self.__printers_stack[-1] if self.__printers_stack else None
     #enddef
 
 #endclass
