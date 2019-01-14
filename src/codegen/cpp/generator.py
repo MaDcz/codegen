@@ -276,6 +276,7 @@ class Context(object):
         self.__save_index()
 
         # Unlock the index.
+	# FIXME Noticed that the index is written even on error and even if not changed (first codegen fails).
         if self.__index_lock is not None:
             self.__index_lock.__exit__(exc_type, exc_value, traceback)
             self.__index_lock = None
@@ -1222,6 +1223,11 @@ class ClassPrinter(NodePrinter):
     #enddef
 
 #endclass
+
+#TODO Improve types treatment:
+# - reference_type - everything by reference
+# - value_type non-fundamental type - store as value type, pass and return references
+# - value_type fundamental type - everything by value
 
 TREATMENT_VALUE_TYPE = "value_type"
 TREATMENT_REFERENCE_TYPE = "reference_type"

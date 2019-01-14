@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 if __name__ == "__main__":
     import argparse
     import logging
@@ -12,6 +10,7 @@ if __name__ == "__main__":
         args_parser.add_argument("-os", "--output-source", dest="output_source", default="", help="output source file base name (overrides -o)")
         args_parser.add_argument("-i",  "--index", dest="index", default="", help="path to the index file")
         args_parser.add_argument("-l",  "--loglevel", dest="loglevel", default="WARNING", help="minimum logging level (DEBUG|INFO|WARNING|ERROR|CRITICAL)")
+        args_parser.add_argument("input_files", metavar="INPUT_FILE", nargs="*")
 
         args = args_parser.parse_args()
 
@@ -35,13 +34,28 @@ if __name__ == "__main__":
 
         # Read codemodel's class diagram from the input.
         import codemodel
-        raw_data = sys.stdin.read()
-        logging.debug("Input data: " + raw_data)
-        class_diag = codemodel.from_json(raw_data)
 
-        # Run a code generator (only C++ for now).
-        from codegen.cpp import Generator as CppGenerator
-        CppGenerator().run(class_diag, args)
+        def process_input_file(f, args):
+            raw_data = f.read()
+            logging.debug("Input data: " + raw_data)
+            class_diag = codemodel.from_json(raw_data)
+
+            # Run a code generator (only C++ for now).
+            from codegen.cpp import Generator as CppGenerator
+            # TODO This won't most probably work with multiple inputs.
+            CppGenerator().run(class_diag, args)
+
+        if args.input_files:
+            for input_filepath in args.input_files:
+                if input_filepath.strip() == "-":
+                    process_input_file(sys.stdin, args)
+                else:
+                    logging.debug("Processing input file '{}'.".format(input_filepath))
+                    with open(input_filepath, "r") as f:
+                        process_input_file(f, args)
+        else:
+            process_input_file(sys.stdin, args)
+
     finally:
         logging.shutdown()
 #endif __main__

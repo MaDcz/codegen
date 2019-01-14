@@ -1,4 +1,4 @@
-#!/usr/bin/python
+from .module import *
 
 if __name__ == "__main__":
     import argparse
@@ -39,8 +39,6 @@ if __name__ == "__main__":
         raise RuntimeError("Invalid command '{}'.".format(args.command))
 
     assert command is not None
-
-    from codegen.index import IndexFile
 
     index_file = IndexFile(args.index)
     with index_file.lock():
