@@ -16,17 +16,10 @@ def nullcontext():
     yield
 #enddef
 
-class Output(object):
-    pass
-#enddef
-
 class Options(object):
 
     def __init__(self, args):
         self.args = args
-
-        self._header_output_file = None
-        self._source_output_file = None
     #enddef
 
     def header_output_filepath(self):
@@ -42,17 +35,6 @@ class Options(object):
             return filepath
     #enddef
 
-    def header_output_file(self):
-        if self._header_output_file is None:
-            filepath = self.header_output_filepath()
-            logging.debug("Opening header output file '{}'.".format(filepath))
-            self._header_output_file = \
-                open(filepath, "w") if filepath else sys.stdout
-
-        assert self._header_output_file is not None
-        return self._header_output_file
-    #enddef
-
     def source_output_filepath(self):
         return self.args.output_source + ".cpp" if self.args.output_source else ""
     #enddef
@@ -64,17 +46,6 @@ class Options(object):
             return pathutils.basename(filepath)
         else:
             return filepath
-    #enddef
-
-    def source_output_file(self):
-        if self._source_output_file is None:
-            filepath = self.source_output_filepath()
-            logging.debug("Opening source output file '{}'.".format(filepath))
-            self._source_output_file = \
-                open(filepath, "w") if filepath else sys.stdout
-
-        assert self._source_output_file is not None
-        return self._source_output_file
     #enddef
 
 #enddef
@@ -256,6 +227,7 @@ class Context(object):
     def __init__(self, options):
         self.__options = options
         self.__out = None
+        self.__out_close = None
         self._printers_data = {}
         self.__phases_stack = []
         self.__namespaces_stack = []
@@ -276,18 +248,14 @@ class Context(object):
         self.__save_index()
 
         # Unlock the index.
-	# FIXME Noticed that the index is written even on error and even if not changed (first codegen fails).
+  # FIXME Noticed that the index is written even on error and even if not changed (first codegen fails).
         if self.__index_lock is not None:
             self.__index_lock.__exit__(exc_type, exc_value, traceback)
             self.__index_lock = None
 
         self.__index == None
 
-        # This is needed to flush printed code into the files, without it the files ends up being empty.
-        # TODO Do it in some better way, best via 'with' statement.
-        self.__options.header_output_file().close()
-        self.__options.source_output_file().close()
-        self.__out = None
+        self.__close_output()
 
         # TODO Errors handling etc.
     #enddef
@@ -299,8 +267,37 @@ class Context(object):
 
     @property
     def out(self):
-        assert self.__out is not None
+        if self.__out is None:
+            self.__open_output()
+
+        assert self.__out
         return self.__out
+    #enddef
+
+    def __open_output(self):
+        self.__close_output()
+        assert self.__out is None
+
+        if self.in_phase(PHASE_HEADER_GEN):
+            fp = self.options.header_output_filepath()
+            if fp:
+                logging.debug("Opening header file '{}' for output.".format(fp))
+                self.__out, self.__out_close = (open(fp, "w"), lambda f: f.close())
+        elif self.in_phase(PHASE_SOURCE_GEN):
+            fp = self.options.source_output_filepath()
+            if fp:
+                logging.debug("Opening source file '{}' for output.".format(fp))
+                self.__out, self.__out_close = (open(fp, "w"), lambda f: f.close())
+
+        if self.__out is None:
+            self.__out, self.__out_close = (sys.stdou, None)
+    #enddef
+
+    def __close_output(self):
+        if self.__out is not None and self.__out_close is not None:
+            self.__out_close(self.__out)
+        self.__out = None
+        self.__out_close = None
     #enddef
 
     @property
@@ -311,17 +308,15 @@ class Context(object):
     def begin_phase(self, phase):
         logging.debug(">>>>>>>>>> Phase {}.".format(phase))
         self.__phases_stack.append(phase)
-        if phase == PHASE_HEADER_GEN:
-            self.__out = self.__options.header_output_file()
-        elif phase == PHASE_SOURCE_GEN:
-            self.__out = self.__options.source_output_file()
     #enddef
 
     def end_phase(self, phase):
         logging.debug("<<<<<<<<<< Phase {}.".format(phase))
         assert self.__phases_stack
-        assert self.__phases_stack[-1] == phase
-        self.__phases_stack.pop()
+        popped_phase = self.__phases_stack.pop()
+        assert popped_phase == phase
+        if popped_phase == PHASE_HEADER_GEN or popped_phase == PHASE_SOURCE_GEN:
+            self.__close_output()
     #enddef
 
     @property
@@ -514,19 +509,46 @@ class Printer(object):
             write_args()
     #enddef
 
-    def resolve_type(self, type_str_or_parts):
+    def resolve_type(self, type_str_or_parts, scope=None):
         """Resolves the provided type in the scope of this printer."""
 
-        type_parts = type_str_or_parts
-        if isinstance(type_parts, str):
-            # TODO Dissect the string by "." or "::" or whatever. Add support for absolute types starting with "::".
-            type_parts = [type_str_or_parts]
-    
+        def type_to_parts(what):
+            """Splits the input into parts. The input can be an iterable in which case it's expected
+            that the individual items are strings or something covnertible to string. Before the
+            result is returned it's checked that it's valid."""
+            type_parts = what
+            if isinstance(what, str):
+                if what.find(".") > -1:
+                    type_parts = what.split(".")
+                elif what.find("::") > -1:
+                    type_parts = what.split("::")
+                else:
+                    type_parts = [what]
+            #endif
+
+            try:
+                iter(type_parts)
+            except TypeError:
+                raise TypeError("The input isn't iterable, expecting a sequence of type parts. Provided input is of type {}.".format(type(what)))
+
+            for i in range(len(type_parts)):
+                part = type_parts[i]
+                if not isinstance(part, str):
+                    part = str(part)
+                    type_parts[i] = part
+                if not part and i > 0:
+                    raise ValueError("Discovered empty part in the input on index [{}].".format(i))
+            #endfor
+
+            return type_parts
+        #enddef
+
+        type_parts = type_to_parts(type_str_or_parts)
         type_str = "::".join(type_parts)
 
         # Get the namespace in which the type was introduced.
         context_ns = []
-        printer = self
+        printer = scope if scope is not None else self
         while printer is not None:
             # TODO It would be safer to have deterministically specified if a printer introduces a namespace.
             if isinstance(printer, NamespacePrinter) \
@@ -537,7 +559,7 @@ class Printer(object):
                     context_ns.insert(0, name)
             printer = printer.parent
         #endwhile
-    
+
         logging.debug("Resolving '{}' in namespace '{}'.".format(type_str, "::".join(context_ns)))
 
         full_type_parts = []
@@ -549,7 +571,7 @@ class Printer(object):
                 full_type_parts = tmp
                 break
         #endfor
-    
+
         if not full_type_parts:
             raise RuntimeError("Cannot resolve '{}' type in '{}' namespace.".format(type_str, "::".join(context_ns)))
 
@@ -685,8 +707,21 @@ class ClassPrinterAsComposite(NodePrinter):
     def __init__(self, node, context, parent_printer):
         super(ClassPrinterAsComposite, self).__init__(node, context, parent_printer)
 
+        # Determine the base type. If base is provided explicitly, resolve it in the parent scope,
+        # the base type can't be in the scope of this class.
+        base_str = node.attributes.get("base", "")
+        base_parts = []
+        if base_str:
+            base_parts = self.resolve_type(base_str, self.parent)
+            base_str = "::".join(base_parts)
+        else:
+            base_parts = ["mad", "codegen", "tree", "CompositeNode"]
+            base_str = "::".join(base_parts)
+
+        self.__base_str = base_str
+
         # Add the base to the used types so an include will be generated.
-        self.context.used_types.add(["mad", "codegen", "tree", "CompositeNode"], self)
+        self.context.used_types.add(base_parts, self)
 
         # Register the printer between known types.
         full_name = []
@@ -803,7 +838,7 @@ class ClassPrinterAsComposite(NodePrinter):
 
             # Start class/struct.
             self.context.begin_phase(PHASE_CLASS_DECL)
-            self.writeln("class {} : public mad::codegen::tree::CompositeNode".format(data.node_attrs.name))
+            self.writeln("class {} : public {}".format(data.node_attrs.name, self.__base_str))
             self.writeln("{")
 
             # Constructor & destructor.
