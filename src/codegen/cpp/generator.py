@@ -365,14 +365,14 @@ class Context(object):
         if self.__index is None:
             self.__index = codegen.index.Index()
 
-        # Debug.
+        # Load index into cpp_types.
         if self.__index:
             logging.debug(">>>>>>>>>> Index file '{}' content".format(self.__options.args.index))
             for key, value in self.__index.items():
                 logging.debug("Found '{}' in index file '{}'".format(key, value))
                 cpp_key = "::".join(key.split(".")) # TODO Do it in a better way after fixing the index iteration. cpp_types maybe can use tuples too after the fix.
                 if cpp_key not in cpp_types:
-                    cpp_types[cpp_key] = {"include": '"' + value["cpp"]["include"] + '"'} # TODO Careful with the access here.
+                    cpp_types[cpp_key] = {"include": value["cpp"]["include"]} # TODO Careful with the access here.
                 else:
                     assert key not in cpp_types
             logging.debug("<<<<<<<<<<")
@@ -612,6 +612,9 @@ class FileHeaderPrinter(Printer):
 
     def generate(self):
 
+        if self.context.in_phase(PHASE_HEADER_GEN):
+            self.writeln("#pragma once")
+
         def print_header(lines):
             width = max(len(ln) for ln in lines)
             self.writeln("// ", "=" * width)
@@ -627,7 +630,6 @@ class FileHeaderPrinter(Printer):
         print_header(header_lines)
 
         if self.context.in_phase(PHASE_HEADER_GEN):
-            self.writeln("#pragma once")
             self._generate_header_includes()
         elif self.context.in_phase(PHASE_SOURCE_GEN):
             self._generate_source_includes()
@@ -723,10 +725,11 @@ class ClassPrinterAsComposite(NodePrinter):
         # Add the base to the used types so an include will be generated.
         self.context.used_types.add(base_parts, self)
 
-        # Register the printer between known types.
+        # Check the type is known, i.e. present in the index.
         full_name = []
         printer = self
         while printer is not None:
+            # TODO Make this more robust.
             if isinstance(printer, NamespacePrinter) \
                     or isinstance(printer, ClassPrinterAsComposite) \
                     or isinstance(printer, ClassPrinter):
@@ -738,10 +741,7 @@ class ClassPrinterAsComposite(NodePrinter):
 
         full_name_str = "::".join(full_name)
         if full_name_str not in cpp_types:
-            cpp_types[full_name_str] = {}
-            logging.debug("Registered '{}' between known types.".format(full_name_str))
-        else:
-            raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
+            logging.warning("Type '{}' not found in index.".format(full_name_str))
     #enddef
 
     def generate(self):
@@ -869,18 +869,6 @@ class ClassPrinterAsComposite(NodePrinter):
             self.writeln("};")
             self.context.end_phase(PHASE_CLASS_DECL)
             data.finished_flag = PRINTER_NOT_FINISHED
-
-            full_name = []
-            ns_or_class_cond = \
-                    lambda p: isinstance(p, NamespacePrinter) or isinstance(p, ClassPrinterAsComposite)
-            ns_or_class = self
-            while ns_or_class:
-                name = ns_or_class.node.attributes.get("name", "")
-                assert name
-                full_name.insert(0, name)
-                ns_or_class = ns_or_class.find_parent(ns_or_class_cond)
-            # FIXME Is the following okay? Also ns_or_class_cond is wrong.
-            self.context.index[tuple(full_name)] = {"cpp": {"include": self.context.options.header_output_filepath()}}
         #endif
 
         # Reset section before source generation starts.
@@ -1000,7 +988,7 @@ class ClassPrinter(NodePrinter):
     def __init__(self, node, context, parent_printer):
         super(ClassPrinter, self).__init__(node, context, parent_printer)
 
-        # Register the printer between known types.
+        # Check the type is known, i.e. present in the index.
         full_name = []
         printer = self
         while printer is not None:
@@ -1015,10 +1003,7 @@ class ClassPrinter(NodePrinter):
 
         full_name_str = "::".join(full_name)
         if full_name_str not in cpp_types:
-            cpp_types[full_name_str] = {}
-            logging.debug("Registered '{}' between known types.".format(full_name_str))
-        else:
-            raise RuntimeError("Redefinition of type '{}'.".format(full_name_str))
+            logging.warning("Type '{}' not present in index.".format(full_name_str))
     #enddef
 
     def generate(self):

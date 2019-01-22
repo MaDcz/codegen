@@ -31,34 +31,66 @@ class LockFile(object):
 
 #endclass
 
+def type_to_parts(what, ns_seps=["."]):
+    """Splits the input into parts. The input can be an iterable in which case it's expected
+    that the individual items are strings or something covnertible to string. The result
+    is a list of individual parts, before it is returned it's checked for validity."""
+    type_parts = what
+    if isinstance(what, str):
+        splitted = False
+        for sep in ns_seps:
+            if what.find(sep) > -1:
+                type_parts = what.split(sep)
+                splitted = True
+                break
+
+        if not splitted:
+            type_parts = [what]
+    #endif
+
+    try:
+        iter(type_parts)
+    except TypeError:
+        raise TypeError("The input isn't iterable, expecting a sequence of type parts. Provided input is of type {}.".format(type(what)))
+
+    for i in range(len(type_parts)):
+        part = type_parts[i]
+        if not isinstance(part, str):
+            part = str(part)
+            type_parts[i] = part
+        if not part:
+            raise ValueError("Discovered empty part in the input on index [{}].".format(i))
+    #endfor
+
+    return type_parts
+#enddef
+
+def validate_key(key, ns_seps=["."], res_sep="."):
+    return res_sep.join(type_to_parts(key, ns_seps))
+#enddef
+
 from collections.abc import MutableMapping
 
 class Index(MutableMapping):
 
     def __init__(self):
         self.__data = {}
+        self.__ns_seps = ["."]
     #enddef
 
     def __getitem__(self, key):
-        if isinstance(key, str):
-            key = (key, ) # TODO Run it through the parser to recognize namespaces.
-        elif not isinstance(key, tuple):
-            raise Exception("The 'key' has to be a full type in form of str or already dissected to a tuple.")
-
-        return self.__data[".".join(key)]
+        validated_key = validate_key(key, self.__ns_seps)
+        return self.__data[validated_key]
     #enddef
 
     def __setitem__(self, key, value):
-        if isinstance(key, str):
-            key = (key, ) # TODO Run it through the parser to recognize namespaces.
-        elif not isinstance(key, tuple):
-            raise Exception("The 'key' has to be a full type in form of str or already dissected to a tuple.")
-
-        self.__data[".".join(key)] = value
+        validated_key = validate_key(key, self.__ns_seps)
+        self.__data[validated_key] = value
     #enddef
 
     def __delitem__(self, key):
-        del self.__data[".".join(key)]
+        validated_key = validate_key(key, self.__ns_seps)
+        del self.__data[validated_key]
     #enddef
 
     def __iter__(self):
@@ -68,6 +100,18 @@ class Index(MutableMapping):
 
     def __len__(self):
         return len(self.__data)
+    #enddef
+
+    def ensure(self, key, *path):
+        validated_key = validate_key(key, self.__ns_seps)
+        if validated_key not in self.__data:
+            self.__data[validated_key] = {}
+        d = self.__data[validated_key]
+        for part in path:
+            if part not in d:
+                d[part] = {}
+            d = d[part]
+        return d
     #enddef
 
     def load_json(self, f):

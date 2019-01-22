@@ -11,27 +11,36 @@ if __name__ == "__main__":
     args = args_parser.parse_args()
 
     command = None
-    if args.command == "add_cpp_include":
 
-        def add_cpp_include(index, command_args):
+    if args.command == "set_cpp_include":
+
+        def set_cpp_include(index, command_args):
             if len(command_args) != 2:
-                raise RuntimeError("The 'add_cpp_include' command expects exactly two arguments, full type and the source where to find it.")
+                raise RuntimeError("The 'set_cpp_include' command expects exactly two arguments, full type and the source where to find it.")
 
             full_type_str = command_args[0]
-            full_type = tuple(full_type_str.split("::")) # TODO Do it in a more robust way. Remove empty items from the beggining and end, check that it isn't empty. Maybe support more serparators than C++ '::' to allow some universal notation, like split on characters that arent allowed in a namespace or type name.
             include = command_args[1]
 
-            if full_type in index:
-                raise RuntimeError("Type '{}' already present in the index.".format(full_type_str))
+            d = index.ensure(full_type_str, "cpp")
 
-            index[full_type] = {"cpp": {"include": include }}
+            if "include" not in d:
+                d["include"] = include
+                return True
+            elif d["include"] == include:
+                return False
+            else:
+                raise RuntimeError("C++ include already present in index for type '{}' and differs. ('{}' != '{}')".format(full_type_str, include, d["include"]))
         #enddef
-        command = add_cpp_include
+        command = set_cpp_include
 
     elif args.command == "clear":
 
         def clear(index, command_args):
-            index.clear()
+            cleared = False
+            if index:
+                index.clear()
+                cleared = True
+            return cleared
         #enddef
         command = clear
 
@@ -43,6 +52,6 @@ if __name__ == "__main__":
     index_file = IndexFile(args.index)
     with index_file.lock():
         index = index_file.load()
-        command(index, args.command_args)
-        index_file.save(index)
+        if command(index, args.command_args):
+            index_file.save(index)
 #endif __main__
