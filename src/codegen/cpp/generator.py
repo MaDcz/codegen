@@ -23,7 +23,9 @@ class Options(object):
     #enddef
 
     def header_output_filepath(self):
-        return self.args.output_header + ".hpp" if self.args.output_header else ""
+        return self.args.output_header if self.args.output_header \
+                else self.args.output + ".hpp" if self.args.output \
+                else ""
     #enddef
 
     def header_output_filename(self):
@@ -36,7 +38,9 @@ class Options(object):
     #enddef
 
     def source_output_filepath(self):
-        return self.args.output_source + ".cpp" if self.args.output_source else ""
+        return self.args.output_source if self.args.output_source \
+                else self.args.output + ".cpp" if self.args.output \
+                else ""
     #enddef
 
     def source_output_filename(self):

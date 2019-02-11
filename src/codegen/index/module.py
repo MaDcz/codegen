@@ -155,4 +155,13 @@ class IndexFile(object):
             index.dump_json(index_file)
     #enddef
 
+    def touch(self):
+        try:
+            with open(self.__filepath, "r"):
+                import os
+                os.utime(self.__filepath)
+        except FileNotFoundError:
+            self.save(Index())
+    #enddef
+
 #endclass
