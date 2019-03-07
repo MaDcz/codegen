@@ -114,6 +114,10 @@ cpp_fundamental_types = {
     "long double" : "long double"
 }
 
+to_cpp_type_map = {
+    "string" : ["std", "string"]
+}
+
 cpp_types = {
     "mad::codegen::CompositeProperty" : {
         "include" : "<mad/codegen/compositeproperty.hpp>"
@@ -132,6 +136,9 @@ cpp_types = {
     },
     "std::vector" : {
         "include" : "<vector>"
+    },
+    "std::string" : {
+        "include" : "<string>"
     }
 }
 
@@ -181,7 +188,13 @@ class IncludeTypesRegister(object):
         for entry in self._register:
             # Convert the type to string. Note that it could be relative.
             # TODO Add support for absolute types starting with '::'.
-            type_str = "::".join(entry["type"])
+            type_parts = entry["type"]
+            type_str = "::".join(type_parts)
+
+            # Support some basic types like 'string'.
+            if type_str in to_cpp_type_map:
+                type_parts = to_cpp_type_map[type_str]
+                type_str = "::".join(type_parts)
 
             # Get the namespace in which the type was introduced.
             context_ns = []
@@ -550,6 +563,11 @@ class Printer(object):
         type_parts = type_to_parts(type_str_or_parts)
         type_str = "::".join(type_parts)
 
+        # Support some basic types like 'string'.
+        if type_str in to_cpp_type_map:
+            type_parts = to_cpp_type_map[type_str]
+            type_str = "::".join(type_parts)
+
         # Get the namespace in which the type was introduced.
         context_ns = []
         printer = scope if scope is not None else self
@@ -568,7 +586,7 @@ class Printer(object):
 
         full_type_parts = []
         for i in reversed(range(len(context_ns) + 1)):
-            tmp = context_ns[0:i] + [type_str]
+            tmp = context_ns[0:i] + type_parts
             tmp_str = "::".join(tmp)
             logging.debug("Resolving '{}', trying if '{}' is a known type.".format(type_str, tmp_str))
             if tmp_str in cpp_types:
@@ -657,9 +675,9 @@ class FileHeaderPrinter(Printer):
     #enddef
 
     def _generate_source_includes(self):
-        header_output_filename = self.context.options.header_output_filename()
-        if header_output_filename:
-            self.writeln('#include "' + self.context.options.header_output_filename()  + '"')
+        header_output_filepath = self.context.options.header_output_filepath()
+        if header_output_filepath:
+            self.writeln('#include "' + header_output_filepath  + '"')
     #enddef
 
 #endclass
@@ -1287,6 +1305,8 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
             self.context.used_types.add(self._base_type, self)
 
         base_type_str = self._base_type if isinstance(self._base_type, str) else "::".join(self._base_type)
+        base_type_str = "::".join(to_cpp_type_map.get(base_type_str, base_type_str))
+
         if self._type_treatment == TREATMENT_VALUE_TYPE:
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "ValuesListProperty" ], self)
