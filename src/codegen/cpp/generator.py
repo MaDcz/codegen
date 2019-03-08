@@ -77,6 +77,9 @@ PHASE_CLASS_MEMBER_PRIVATE_VARIABLE   = PHASE_CLASS_MEMBER + 7
 PRINTER_FINISHED = 1
 PRINTER_NOT_FINISHED = 0
 
+TYPE_TREATMENT_VALUE = "value_type"
+TYPE_TREATMENT_REFERENCE = "reference_type"
+
 cpp_fundamental_types = {
     "bool" : "bool",
     "char" : "char",
@@ -138,7 +141,8 @@ cpp_types = {
         "include" : "<vector>"
     },
     "std::string" : {
-        "include" : "<string>"
+        "include" : "<string>",
+        "treatment" : TYPE_TREATMENT_VALUE
     }
 }
 
@@ -1271,9 +1275,6 @@ class ClassPrinter(NodePrinter):
 # - value_type non-fundamental type - store as value type, pass and return references
 # - value_type fundamental type - everything by value
 
-TREATMENT_VALUE_TYPE = "value_type"
-TREATMENT_REFERENCE_TYPE = "reference_type"
-
 class ClassMemberPrinter(NodePrinter):
 
     def __init__(self, node, context, parent_printer):
@@ -1284,11 +1285,11 @@ class ClassMemberPrinter(NodePrinter):
         self._full_type = self._base_type if self._base_type_is_fundamental else self.resolve_type(self._base_type)
         def determine_type_treatment():
             if self._base_type_is_fundamental:
-                return TREATMENT_VALUE_TYPE
+                return TYPE_TREATMENT_VALUE
             else:
                 full_type_str = "::".join(self._full_type)
                 assert full_type_str in cpp_types
-                return cpp_types[full_type_str].get("treatment", TREATMENT_REFERENCE_TYPE)
+                return cpp_types[full_type_str].get("treatment", TYPE_TREATMENT_REFERENCE)
         #enddef
         self._type_treatment = determine_type_treatment()
         self._is_repeated = node.attributes.get("is_repeated", False)
@@ -1307,7 +1308,7 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
         base_type_str = self._base_type if isinstance(self._base_type, str) else "::".join(self._base_type)
         base_type_str = "::".join(to_cpp_type_map.get(base_type_str, base_type_str))
 
-        if self._type_treatment == TREATMENT_VALUE_TYPE:
+        if self._type_treatment == TYPE_TREATMENT_VALUE:
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "ValuesListProperty" ], self)
                 self._type_str = "mad::codegen::ValuesListProperty<{}>".format(base_type_str)
