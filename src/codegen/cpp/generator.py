@@ -117,9 +117,16 @@ cpp_fundamental_types = {
     "long double" : "long double"
 }
 
-to_cpp_type_map = {
+to_cpp_type_map_std = {
     "string" : ["std", "string"]
 }
+
+to_cpp_type_map_qt = {
+    "string" : ["QString"]
+}
+
+# TODO This should be done through some option.
+to_cpp_type_map = to_cpp_type_map_qt
 
 cpp_types = {
     "mad::codegen::CompositeProperty" : {
@@ -142,6 +149,10 @@ cpp_types = {
     },
     "std::string" : {
         "include" : "<string>",
+        "treatment" : TYPE_TREATMENT_VALUE
+    },
+    "QString" : {
+        "include" : "<QString>",
         "treatment" : TYPE_TREATMENT_VALUE
     }
 }
