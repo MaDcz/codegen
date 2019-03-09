@@ -311,7 +311,7 @@ class Context(object):
                 self.__out, self.__out_close = (open(fp, "w"), lambda f: f.close())
 
         if self.__out is None:
-            self.__out, self.__out_close = (sys.stdou, None)
+            self.__out, self.__out_close = (sys.stdout, None)
     #enddef
 
     def __close_output(self):
@@ -870,6 +870,7 @@ class ClassPrinterAsComposite(NodePrinter):
             # Constructor & destructor.
             with switch_section(SECTION_PUBLIC):
                 self.writeln("  {}();".format(data.node_attrs.name))
+                self.writeln("  {class_name}(const {class_name}& other);".format(class_name = data.node_attrs.name))
                 self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
             # Generate methods.
@@ -983,6 +984,32 @@ class ClassPrinterAsComposite(NodePrinter):
 
                 self.writeln("{")
                 self.writeln("}")
+
+                # Copy constructor.
+                self.writeln("{name}::{name}(const {name}& other)".format(name=data.node_attrs.name))
+                self.write("  : {}(other)".format(self.__base_str))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                if written:
+                    self.writeln()
+
+                self.writeln("{")
+                self.writeln("}")
+
+                # Destructor.
                 self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
                 self.writeln("{")
                 self.writeln("}")
@@ -1305,8 +1332,13 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
         if not self._base_type_is_fundamental:
             self.context.used_types.add(self._base_type, self)
 
-        base_type_str = self._base_type if isinstance(self._base_type, str) else "::".join(self._base_type)
-        base_type_str = "::".join(to_cpp_type_map.get(base_type_str, base_type_str))
+        if isinstance(self._base_type, str):
+            base_type_str = self._base_type
+        else:
+            base_type_str = "::".join(self._base_type)
+            if base_type_str in to_cpp_type_map:
+                base_type_str = "::".join(to_cpp_type_map[base_type_str])
+        #endif
 
         if self._type_treatment == TYPE_TREATMENT_VALUE:
             if self._is_repeated:
