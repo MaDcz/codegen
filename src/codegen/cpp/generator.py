@@ -871,6 +871,9 @@ class ClassPrinterAsComposite(NodePrinter):
             with switch_section(SECTION_PUBLIC):
                 self.writeln("  {}();".format(data.node_attrs.name))
                 self.writeln("  {class_name}(const {class_name}& other);".format(class_name = data.node_attrs.name))
+                self.writeln("  {class_name}& operator=(const {class_name}& other);".format(class_name = data.node_attrs.name))
+                self.writeln("  {class_name}({class_name}&& other);".format(class_name = data.node_attrs.name))
+                self.writeln("  {class_name}& operator=({class_name}&& other);".format(class_name = data.node_attrs.name))
                 self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
             # Generate methods.
@@ -963,6 +966,7 @@ class ClassPrinterAsComposite(NodePrinter):
                 self.writeln("  m_impl = nullptr;")
                 self.writeln("}")
             else:
+                # Constructor.
                 self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
 
                 self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
@@ -1007,6 +1011,44 @@ class ClassPrinterAsComposite(NodePrinter):
                     self.writeln()
 
                 self.writeln("{")
+                self.writeln("}")
+
+                # Copy assignment operator.
+                self.writeln("{name}& {name}::operator=(const {name}& other)".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("  {base}::operator=(other);".format(base=self.__base_str))
+                self.writeln("  return *this;")
+                self.writeln("}")
+
+                # Move constructor.
+                self.writeln("{name}::{name}({name}&& other)".format(name=data.node_attrs.name))
+                self.write("  : {}(std::move(other))".format(self.__base_str))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                written = False
+                def set_written():
+                    nonlocal written
+                    written = True
+                #enddef
+                with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
+                    for printer in self.printers:
+                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
+                            # TODO Update finished flag.
+                            printer.generate()
+                #endwith
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                if written:
+                    self.writeln()
+
+                self.writeln("{")
+                self.writeln("}")
+
+                # Move assignment operator.
+                self.writeln("{name}& {name}::operator=({name}&& other)".format(name=data.node_attrs.name))
+                self.writeln("{")
+                self.writeln("  {base}::operator=(std::move(other));".format(base=self.__base_str))
+                self.writeln("  return *this;")
                 self.writeln("}")
 
                 # Destructor.
