@@ -1,5 +1,4 @@
-#ifndef __MAD_CODEGEN_VALUEPROPERTY_HPP__
-#define __MAD_CODEGEN_VALUEPROPERTY_HPP__
+#pragma once
 
 #include "property.hpp"
 #include "tree/valuenode.hpp"
@@ -15,16 +14,52 @@ public:
   {
   }
 
-  template <typename TOtherValueProperty>
-  ValueProperty& operator=(const TOtherValueProperty& other)
+  ValueProperty& operator=(const ValueProperty& other)
   {
     if (other)
-      this->ensureNode() = other->get();
+      this->ensure() = other->get();
+    else
+      this->clear();
 
     return *this;
+  }
+
+  ValueProperty& operator=(typename tree::ValueNode<TValue>::const_reference otherValue)
+  {
+    this->ensure() = otherValue;
+    return *this;
+  }
+
+  bool operator==(const ValueProperty& other) const
+  {
+    auto thisPresent = this->isPresent();
+    auto otherPresent = other.isPresent();
+
+    if (thisPresent != otherPresent)
+      return false;
+    else if (!thisPresent)
+      return true;
+    else
+      return this->node() == other.node();
+  }
+
+  bool operator!=(const ValueProperty& other) const
+  {
+    return !this->operator==(other);
+  }
+
+  bool operator==(typename tree::ValueNode<TValue>::const_reference otherValue) const
+  {
+    if (!this->isPresent())
+      return false;
+    else
+      return this->node().get() == otherValue;
+  }
+
+  bool operator!=(typename tree::ValueNode<TValue>::const_reference otherValue) const
+  {
+    return !this->operator==(otherValue);
   }
 };
 
 }} // namespace mad::codegen
-
-#endif // __MAD_CODEGEN_VALUEPROPERTY_HPP__

@@ -1,5 +1,4 @@
-#ifndef __MAD_CODEGEN_LISTPROPERTY_HPP__
-#define __MAD_CODEGEN_LISTPROPERTY_HPP__
+#pragma once
 
 #include "property.hpp"
 
@@ -83,5 +82,3 @@ protected:
 };
 
 }} // namespace mad::codegen
-
-#endif // __MAD_CODEGEN_LISTPROPERTY_HPP__

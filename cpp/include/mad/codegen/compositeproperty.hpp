@@ -1,5 +1,4 @@
-#ifndef __MAD_CODEGEN_COMPOSITEPROPERTY_HPP__
-#define __MAD_CODEGEN_COMPOSITEPROPERTY_HPP__
+#pragma once
 
 #include "property.hpp"
 
@@ -13,8 +12,12 @@ public:
     : Property<TComposite>(owningNode, propKey)
   {
   }
+
+  CompositeProperty& operator=(const TComposite& other)
+  {
+    this->ensure() = other;
+    return *this;
+  }
 };
 
 }} // namespace mad::codegen
-
-#endif // __MAD_CODEGEN_COMPOSITEPROPERTY_HPP__

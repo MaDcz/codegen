@@ -1,9 +1,9 @@
-#ifndef __MAD_CODEGEN_PROPERTY_HPP__
-#define __MAD_CODEGEN_PROPERTY_HPP__
+#pragma once
 
 #include "tree/compositenode.hpp"
 
 #include <cassert>
+#include <memory>
 #include <stdexcept>
 
 namespace mad { namespace codegen {
@@ -92,5 +92,3 @@ private:
 };
 
 }} // namespace mad::codegen
-
-#endif // __MAD_CODEGEN_PROPERTY_HPP__
