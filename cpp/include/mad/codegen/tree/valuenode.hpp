@@ -14,24 +14,25 @@ public:
   using const_reference = typename std::conditional<std::is_fundamental<TValue>::value, TValue, const TValue&>::type;
 
 public:
-// FIXME
+// FIXME Could be used for any compatible value type.
 //  template <typename TOtherValue>
 //  ValueNode& operator=(typename std::conditional<std::is_fundamental<TOtherValue>::value, TOtherValue, const TOtherValue&>::type otherValue)
 //  {
 //    m_value = otherValue;
 //    return *this;
 //  }
-  ValueNode& operator=(const_reference otherValue)
+
+  ValueNode& operator=(const_reference value)
   {
-    m_value = otherValue;
+    m_value = value;
     return *this;
   }
+
+  reference get() { return m_value; }
 
   const_reference get() const { return m_value; }
 
   void set(const_reference value) { m_value = value; }
-
-  std::unique_ptr<Node> clone() const override { return std::make_unique<ValueNode>(*this); }
 
   operator reference() { return m_value; }
 

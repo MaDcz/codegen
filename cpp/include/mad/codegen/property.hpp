@@ -30,59 +30,40 @@ public:
   Property(Property&&) = delete;
   Property& operator=(Property&&) = delete;
 
-  Node* operator->() { return &ensureNode(); }
-  const Node* operator->() const { return &node(); }
-  Node& operator*() { return ensureNode(); }
-  const Node& operator*() const { return node(); }
+  Node* operator->() { return &ensurePropertyNode(); }
+  const Node* operator->() const { return &propertyNode(); }
+  Node& operator*() { return ensurePropertyNode(); }
+  const Node& operator*() const { return propertyNode(); }
 
   bool isPresent() const { return m_owningNode.find(m_propKey) != m_owningNode.end(); }
   explicit operator bool() const { return isPresent(); }
-  Node& ensure() { return ensureNode(); }
+  Node& ensure() { return ensurePropertyNode(); }
   void clear() { m_owningNode.erase(m_propKey); }
 
 protected:
-  Node& node()
+  const Node& propertyNode() const
   {
     auto it = m_owningNode.find(m_propKey);
-    Node* node = nullptr;
-    if (it != m_owningNode.end())
-      node = dynamic_cast<Node*>(&it->value());
-    else
-      throw std::logic_error("Property not present in the owning composite.");
+    if (it == m_owningNode.end())
+      throw std::logic_error("Null property access violation.");
 
-    assert(node);
+    auto node = dynamic_cast<const Node*>(&it->value());
+    if (!node)
+      throw std::logic_error("Unexpected node type.");
+
     return *node;
   }
 
-  const Node& node() const
+  Node& ensurePropertyNode()
   {
     auto it = m_owningNode.find(m_propKey);
-    const Node* node = nullptr;
-    if (it != m_owningNode.end())
-      node = dynamic_cast<const Node*>(&it->value());
-    else
-      throw std::logic_error("Property not present in the owning composite.");
+    if (it == m_owningNode.end())
+      it = m_owningNode.insert(m_propKey, std::make_unique<Node>()).first;
 
-    assert(node);
-    return *node;
-  }
+    auto node = dynamic_cast<Node*>(&it->value());
+    if (!node)
+      throw std::logic_error("Unexpected node type.");
 
-  Node& ensureNode()
-  {
-    auto it = m_owningNode.find(m_propKey);
-    Node* node = nullptr;
-    if (it != m_owningNode.end())
-    {
-      node = dynamic_cast<Node*>(&it->value());
-    }
-    else
-    {
-      auto insert = m_owningNode.insert(m_propKey, std::make_unique<Node>());
-      assert(insert.second);
-      node = dynamic_cast<Node*>(&insert.first->value());
-    }
-
-    assert(node);
     return *node;
   }
 

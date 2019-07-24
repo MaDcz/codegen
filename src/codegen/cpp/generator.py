@@ -132,6 +132,9 @@ cpp_types = {
     "mad::codegen::CompositeProperty" : {
         "include" : "<mad/codegen/compositeproperty.hpp>"
     },
+    "mad::codegen::ReferenceProperty" : {
+        "include" : "<mad/codegen/referenceproperty.hpp>"
+    },
     "mad::codegen::CompositesListProperty" : {
         "include" : "<mad/codegen/compositeslistproperty.hpp>"
     },
@@ -881,11 +884,6 @@ class ClassPrinterAsComposite(NodePrinter):
             # Constructor & destructor.
             with switch_section(SECTION_PUBLIC):
                 self.writeln("  {}();".format(data.node_attrs.name))
-                self.writeln("  {class_name}(const {class_name}& other);".format(class_name = data.node_attrs.name))
-                self.writeln("  {class_name}& operator=(const {class_name}& other);".format(class_name = data.node_attrs.name))
-                self.writeln("  {class_name}({class_name}&& other);".format(class_name = data.node_attrs.name))
-                self.writeln("  {class_name}& operator=({class_name}&& other);".format(class_name = data.node_attrs.name))
-                self.writeln("  virtual ~{}();".format(data.node_attrs.name))
 
             # Generate methods.
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
@@ -997,73 +995,6 @@ class ClassPrinterAsComposite(NodePrinter):
                 if written:
                     self.writeln()
 
-                self.writeln("{")
-                self.writeln("}")
-
-                # Copy constructor.
-                self.writeln("{name}::{name}(const {name}& other)".format(name=data.node_attrs.name))
-                self.write("  : {}(other)".format(self.__base_str))
-
-                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
-                written = False
-                def set_written():
-                    nonlocal written
-                    written = True
-                #enddef
-                with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
-                    for printer in self.printers:
-                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
-                            # TODO Update finished flag.
-                            printer.generate()
-                #endwith
-                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
-
-                if written:
-                    self.writeln()
-
-                self.writeln("{")
-                self.writeln("}")
-
-                # Copy assignment operator.
-                self.writeln("{name}& {name}::operator=(const {name}& other)".format(name=data.node_attrs.name))
-                self.writeln("{")
-                self.writeln("  {base}::operator=(other);".format(base=self.__base_str))
-                self.writeln("  return *this;")
-                self.writeln("}")
-
-                # Move constructor.
-                self.writeln("{name}::{name}({name}&& other)".format(name=data.node_attrs.name))
-                self.write("  : {}(std::move(other))".format(self.__base_str))
-
-                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
-                written = False
-                def set_written():
-                    nonlocal written
-                    written = True
-                #enddef
-                with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING, after_write=set_written):
-                    for printer in self.printers:
-                        with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING) if written else nullcontext():
-                            # TODO Update finished flag.
-                            printer.generate()
-                #endwith
-                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
-
-                if written:
-                    self.writeln()
-
-                self.writeln("{")
-                self.writeln("}")
-
-                # Move assignment operator.
-                self.writeln("{name}& {name}::operator=({name}&& other)".format(name=data.node_attrs.name))
-                self.writeln("{")
-                self.writeln("  {base}::operator=(std::move(other));".format(base=self.__base_str))
-                self.writeln("  return *this;")
-                self.writeln("}")
-
-                # Destructor.
-                self.writeln("{name}::~{name}()".format(name=data.node_attrs.name))
                 self.writeln("{")
                 self.writeln("}")
             #endif
@@ -1373,6 +1304,7 @@ class ClassMemberPrinter(NodePrinter):
         #enddef
         self._type_treatment = determine_type_treatment()
         self._is_repeated = node.attributes.get("is_repeated", False)
+        self._is_ref = node.attributes.get("is_ref", False)
     #enddef
 
 #endclass
@@ -1404,6 +1336,9 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
             if self._is_repeated:
                 self.context.used_types.add([ "mad", "codegen", "CompositesListProperty" ], self)
                 self._type_str = "mad::codegen::CompositesListProperty<{}>".format(base_type_str)
+            elif self._is_ref:
+                self.context.used_types.add([ "mad", "codegen", "ReferenceProperty" ], self)
+                self._type_str = "mad::codegen::ReferenceProperty<{}>".format(base_type_str)
             else:
                 self.context.used_types.add([ "mad", "codegen", "CompositeProperty" ], self)
                 self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
@@ -1424,6 +1359,9 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
         #enddef
 
         def generate_class_impl():
+            if self._is_ref:
+              return
+
             if self.context.in_phase(PHASE_CLASS_MEMBER_INIT):
                 self.write('{0}(*this, "{0}")'.format(self.node.attributes.get("name", "")))
         #enddef

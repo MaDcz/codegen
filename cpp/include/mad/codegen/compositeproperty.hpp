@@ -12,12 +12,6 @@ public:
     : Property<TComposite>(owningNode, propKey)
   {
   }
-
-  CompositeProperty& operator=(const TComposite& other)
-  {
-    this->ensure() = other;
-    return *this;
-  }
 };
 
 }} // namespace mad::codegen

@@ -23,29 +23,20 @@ public:
   {
   }
 
-  using Base::ensure;
+  ItemNode& ensure(size_t pos) { return ensureItemNode(pos); }
 
-  ItemNode& ensure(size_t pos) { return ensureNode(pos); }
+  ItemNode& operator[](size_t pos) { return itemNode(pos); }
 
-  ItemNode& operator[](size_t pos) { return node(pos); }
+  const ItemNode& operator[](size_t pos) const { return itemNode(pos); }
 
-  const ItemNode& operator[](size_t pos) const { return node(pos); }
+  size_t size() const { return itemNode().size(); }
 
-  size_t size() const { return node().size(); }
-
-  using Base::isPresent;
-
-  bool isPresent(size_t pos) const
-  {
-    return isPresent() && pos < node().size();
-  }
+  bool isItemPresent(size_t pos) const { return isPresent() && pos < itemNode().size(); }
 
 protected:
-  using Base::node;
-
-  ItemNode& node(size_t pos)
+  ItemNode& itemNode(size_t pos)
   {
-    auto& generalItemNode = node().at(pos);
+    auto& generalItemNode = itemNode().at(pos);
     auto itemNode = dynamic_cast<ItemNode*>(&generalItemNode);
     if (!itemNode)
       throw std::logic_error("Invalid item type in list property at pos TODO.");
@@ -53,9 +44,9 @@ protected:
     return *itemNode;
   }
 
-  const ItemNode& node(size_t pos) const
+  const ItemNode& itemNode(size_t pos) const
   {
-    const auto& generalItemNode = node().at(pos);
+    const auto& generalItemNode = itemNode().at(pos);
     auto itemNode = dynamic_cast<const ItemNode*>(&generalItemNode);
     if (!itemNode)
       throw std::logic_error("Invalid item type in list property at pos TODO.");
@@ -63,11 +54,9 @@ protected:
     return *itemNode;
   }
 
-  using Base::ensureNode;
-
-  ItemNode& ensureNode(size_t pos)
+  ItemNode& ensureItemNode(size_t pos)
   {
-    auto& listNode = ensureNode();
+    auto& listNode = ensurePropertyNode();
     while (pos >= listNode.size())
       listNode.add(std::make_unique<ItemNode>());
 
