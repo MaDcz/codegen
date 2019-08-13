@@ -118,11 +118,13 @@ cpp_fundamental_types = {
 }
 
 to_cpp_type_map_std = {
-    "string" : ["std", "string"]
+    "string" : ["std", "string"],
+    "bytes" : ["std", "string"]
 }
 
 to_cpp_type_map_qt = {
-    "string" : ["QString"]
+    "string" : ["QString"],
+    "bytes" : ["std", "string"]
 }
 
 # TODO This should be done through some option.
