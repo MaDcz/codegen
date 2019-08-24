@@ -14,8 +14,8 @@ public:
   Node(const Node&) = delete;
   Node& operator=(const Node&) = delete;
 
-  Node(Node&&) = delete;
-  Node& operator=(Node&&) = delete;
+  Node(Node&&) = default;
+  Node& operator=(Node&&) = default;
 };
 
 }}} // namespace mad::codegen::tree

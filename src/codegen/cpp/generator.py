@@ -118,13 +118,11 @@ cpp_fundamental_types = {
 }
 
 to_cpp_type_map_std = {
-    "string" : ["std", "string"],
-    "bytes" : ["std", "string"]
+    "string" : ["std", "string"]
 }
 
 to_cpp_type_map_qt = {
-    "string" : ["QString"],
-    "bytes" : ["std", "string"]
+    "string" : ["QString"]
 }
 
 # TODO This should be done through some option.
@@ -136,6 +134,9 @@ cpp_types = {
     },
     "mad::codegen::ReferenceProperty" : {
         "include" : "<mad/codegen/referenceproperty.hpp>"
+    },
+    "mad::codegen::ReferencesListProperty" : {
+        "include" : "<mad/codegen/referenceslistproperty.hpp>"
     },
     "mad::codegen::CompositesListProperty" : {
         "include" : "<mad/codegen/compositeslistproperty.hpp>"
@@ -883,9 +884,10 @@ class ClassPrinterAsComposite(NodePrinter):
             self.writeln("class {} : public {}".format(data.node_attrs.name, self.__base_str))
             self.writeln("{")
 
-            # Constructor & destructor.
+            # Constructor & move constructor.
             with switch_section(SECTION_PUBLIC):
-                self.writeln("  {}();".format(data.node_attrs.name))
+                self.writeln("  {class_name}();".format(class_name=data.node_attrs.name))
+                self.writeln("  {class_name}({class_name}&& other);".format(class_name=data.node_attrs.name))
 
             # Generate methods.
             generate_content([ PHASE_CLASS_MEMBER_GETTER,
@@ -951,7 +953,7 @@ class ClassPrinterAsComposite(NodePrinter):
 
             # Constructor & destructor.
             if data.node_attrs.cpp.pimpl:
-                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+                self.writeln("{class_name}::{class_name}()".format(class_name=data.node_attrs.name))
 
                 self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
                 written = False
@@ -978,7 +980,7 @@ class ClassPrinterAsComposite(NodePrinter):
                 self.writeln("}")
             else:
                 # Constructor.
-                self.writeln("{name}::{name}()".format(name=data.node_attrs.name))
+                self.writeln("{class_name}::{class_name}()".format(class_name=data.node_attrs.name))
 
                 self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
                 written = False
@@ -996,6 +998,22 @@ class ClassPrinterAsComposite(NodePrinter):
 
                 if written:
                     self.writeln()
+
+                self.writeln("{")
+                self.writeln("}")
+
+                # Move constructor.
+                self.writeln("{class_name}::{class_name}({class_name}&& other)".format(class_name=data.node_attrs.name))
+                self.write("  : {base_class}(std::move(other))".format(base_class=self.__base_str))
+
+                self.context.begin_phase(PHASE_CLASS_MEMBER_INIT)
+                for printer in self.printers:
+                    with self.write(",\n    ", mode=Printer.WRITE_MODE_TEMPTING):
+                        # TODO Update finished flag.
+                        printer.generate()
+                self.context.end_phase(PHASE_CLASS_MEMBER_INIT)
+
+                self.writeln()
 
                 self.writeln("{")
                 self.writeln("}")
@@ -1336,14 +1354,19 @@ class ClassMemberPrinter_Property(ClassMemberPrinter):
                 self._type_str = "mad::codegen::ValueProperty<{}>".format(base_type_str)
         else:
             if self._is_repeated:
-                self.context.used_types.add([ "mad", "codegen", "CompositesListProperty" ], self)
-                self._type_str = "mad::codegen::CompositesListProperty<{}>".format(base_type_str)
-            elif self._is_ref:
-                self.context.used_types.add([ "mad", "codegen", "ReferenceProperty" ], self)
-                self._type_str = "mad::codegen::ReferenceProperty<{}>".format(base_type_str)
+                if not self._is_ref:
+                    self.context.used_types.add([ "mad", "codegen", "CompositesListProperty" ], self)
+                    self._type_str = "mad::codegen::CompositesListProperty<{}>".format(base_type_str)
+                else:
+                    self.context.used_types.add([ "mad", "codegen", "ReferencesListProperty" ], self)
+                    self._type_str = "mad::codegen::ReferencesListProperty<{}>".format(base_type_str)
             else:
-                self.context.used_types.add([ "mad", "codegen", "CompositeProperty" ], self)
-                self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
+                if not self._is_ref:
+                    self.context.used_types.add([ "mad", "codegen", "CompositeProperty" ], self)
+                    self._type_str = "mad::codegen::CompositeProperty<{}>".format(base_type_str)
+                else:
+                    self.context.used_types.add([ "mad", "codegen", "ReferenceProperty" ], self)
+                    self._type_str = "mad::codegen::ReferenceProperty<{}>".format(base_type_str)
         #endif
 
         logging.debug("Class member '{}'. (type='{}' base_type='{}' treatment={} is_repeated={})"

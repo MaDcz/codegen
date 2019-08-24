@@ -29,7 +29,7 @@ public:
 
   const ItemNode& operator[](size_t pos) const { return itemNode(pos); }
 
-  size_t size() const { return itemNode().size(); }
+  size_t size() const { return propertyNode().size(); }
 
   bool isItemPresent(size_t pos) const { return isPresent() && pos < itemNode().size(); }
 

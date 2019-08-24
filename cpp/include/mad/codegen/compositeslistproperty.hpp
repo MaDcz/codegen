@@ -1,5 +1,4 @@
-#ifndef __MAD_CODEGEN_COMPOSITESLISTPROPERTY_HPP__
-#define __MAD_CODEGEN_COMPOSITESLISTPROPERTY_HPP__
+#pragma once
 
 #include "listproperty.hpp"
 
@@ -20,5 +19,3 @@ public:
 };
 
 }} // namespace mad::codegen
-
-#endif // __MAD_CODEGEN_COMPOSITESLISTPROPERTY_HPP__
