@@ -15,6 +15,10 @@ public:
 
   virtual ~ReferencesListProperty() {}
 
+  bool isPresent() const { return !m_referencedNodes.empty(); }
+
+  explicit operator bool() const { return isPresent(); }
+
   const ItemNode& operator[](size_t pos) const { return *m_referencedNodes[pos]; }
 
   size_t size() const { return m_referencedNodes.size(); }
