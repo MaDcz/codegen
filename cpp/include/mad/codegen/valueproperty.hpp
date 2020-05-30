@@ -40,7 +40,7 @@ public:
     else if (!thisPresent)
       return true;
     else
-      return propertyNode() == other.propertyNode();
+      return this->propertyNode() == other.propertyNode();
   }
 
   bool operator!=(const ValueProperty& other) const
@@ -53,7 +53,7 @@ public:
     if (!this->isPresent())
       return false;
     else
-      return propertyNode().get() == otherValue;
+      return this->propertyNode().get() == otherValue;
   }
 
   bool operator!=(typename tree::ValueNode<TValue>::const_reference otherValue) const
