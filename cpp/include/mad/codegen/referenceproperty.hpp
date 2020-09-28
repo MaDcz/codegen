@@ -28,6 +28,7 @@ public:
 
   const Node* operator->() const { return &propertyNode(); }
   const Node& operator*() const { return propertyNode(); }
+  const Node* get() const { return m_referencedNode; }
 
   bool isPresent() const { return m_referencedNode; }
   explicit operator bool() const { return isPresent(); }

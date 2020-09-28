@@ -37,12 +37,14 @@ public:
 
   size_t size() const { return isPresent() ? propertyNode().size() : 0; }
 
-  bool isItemPresent(size_t pos) const { return isPresent() && pos < itemNode().size(); }
+  bool isItemPresent(size_t pos) const { return isPresent() && pos < propertyNode().size(); }
+
+  size_t indexOf(const ItemNode& itemNode) const;
 
 protected:
   ItemNode& itemNode(size_t pos)
   {
-    auto& generalItemNode = itemNode().at(pos);
+    auto& generalItemNode = propertyNode().at(pos);
     auto itemNode = dynamic_cast<ItemNode*>(&generalItemNode);
     if (!itemNode)
       throw std::logic_error("Invalid item type in list property at pos TODO.");
@@ -52,7 +54,7 @@ protected:
 
   const ItemNode& itemNode(size_t pos) const
   {
-    const auto& generalItemNode = itemNode().at(pos);
+    const auto& generalItemNode = propertyNode().at(pos);
     auto itemNode = dynamic_cast<const ItemNode*>(&generalItemNode);
     if (!itemNode)
       throw std::logic_error("Invalid item type in list property at pos TODO.");
@@ -85,6 +87,16 @@ template <typename TItemNode>
 inline void ListProperty<TItemNode>::ensureItem(size_t pos, std::unique_ptr<ItemNode>&& itemNode)
 {
   ensureItemNode(pos, std::move(itemNode));
+}
+
+template <typename TItemNode>
+size_t ListProperty<TItemNode>::indexOf(const ItemNode& itemNode) const
+{
+  for (size_t index = 0; index < size(); ++index)
+      if (&this->itemNode(index) == &itemNode)
+          return index;
+
+  throw std::logic_error("Provided item isn't in this list.");
 }
 
 template <typename TItemNode>
